@@ -1,0 +1,207 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  TEACHER
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+}
+
+enum PaymentStatus {
+  PAID
+  PARTIAL
+  PENDING
+}
+
+enum SalaryStatus {
+  PENDING
+  PAID
+}
+
+model User {
+  id          String   @id @default(cuid())
+  name        String
+  email       String   @unique
+  password    String
+  role        Role     @default(TEACHER)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assignments   TeacherAssignment[]
+  sessions      TeacherSession[]
+  attendances   Attendance[]
+  salaries      TeacherSalary[]
+}
+
+model Institute {
+  id                    String   @id @default(cuid())
+  name                  String
+  contactDetails        String?
+  currency              String   @default("Rs.")
+  defaultTeacherRate    Int      @default(5000)
+  defaultSessionCount   Int      @default(12)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model Grade {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  subjects    Subject[]
+  students    Student[]
+  assignments TeacherAssignment[]
+  sessions    TeacherSession[]
+  salaries    TeacherSalary[]
+}
+
+model Subject {
+  id                   String   @id @default(cuid())
+  name                 String
+  gradeId              String
+  fee                  Int      @default(0)
+  monthlySessionTarget Int      @default(12)
+  createdAt            DateTime @default(now())
+
+  grade           Grade               @relation(fields: [gradeId], references: [id])
+  assignments     TeacherAssignment[]
+  enrollments     StudentSubject[]
+  attendances     Attendance[]
+  sessions        TeacherSession[]
+  payments        FeePayment[]
+  salaries        TeacherSalary[]
+
+  @@unique([name, gradeId])
+}
+
+model TeacherAssignment {
+  id        String   @id @default(cuid())
+  userId    String
+  subjectId String
+  gradeId   String
+  rate      Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+  grade   Grade   @relation(fields: [gradeId], references: [id])
+
+  @@unique([userId, subjectId, gradeId])
+}
+
+model Student {
+  id            String        @id @default(cuid())
+  name          String
+  gradeId       String
+  parentName    String?
+  parentContact String?
+  status        StudentStatus @default(ACTIVE)
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  grade       Grade            @relation(fields: [gradeId], references: [id])
+  subjects    StudentSubject[]
+  attendances Attendance[]
+  payments    FeePayment[]
+}
+
+model StudentSubject {
+  id        String   @id @default(cuid())
+  studentId String
+  subjectId String
+  createdAt DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+
+  @@unique([studentId, subjectId])
+}
+
+model Attendance {
+  id            String           @id @default(cuid())
+  studentId     String
+  subjectId     String
+  teacherId     String
+  date          DateTime
+  sessionNumber Int
+  status        AttendanceStatus @default(PRESENT)
+  remarks       String?
+  createdAt     DateTime         @default(now())
+
+  student Student @relation(fields: [studentId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+  teacher User    @relation(fields: [teacherId], references: [id])
+}
+
+model TeacherSession {
+  id        String   @id @default(cuid())
+  teacherId String
+  subjectId String
+  gradeId   String
+  date      DateTime
+  month     Int
+  year      Int
+  createdAt DateTime @default(now())
+
+  teacher User    @relation(fields: [teacherId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+  grade   Grade   @relation(fields: [gradeId], references: [id])
+}
+
+model FeePayment {
+  id          String        @id @default(cuid())
+  studentId   String
+  subjectId   String
+  month       Int
+  year        Int
+  amountDue   Int
+  amountPaid  Int           @default(0)
+  discount    Int           @default(0)
+  balance     Int           @default(0)
+  status      PaymentStatus @default(PENDING)
+  paidAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  student Student @relation(fields: [studentId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+}
+
+model TeacherSalary {
+  id                String       @id @default(cuid())
+  teacherId         String
+  subjectId         String
+  gradeId           String
+  month             Int
+  year              Int
+  completedSessions Int          @default(0)
+  requiredSessions  Int          @default(12)
+  rate              Int          @default(5000)
+  totalPayable      Int          @default(0)
+  status            SalaryStatus @default(PENDING)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  teacher User    @relation(fields: [teacherId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
+  grade   Grade   @relation(fields: [gradeId], references: [id])
+}
