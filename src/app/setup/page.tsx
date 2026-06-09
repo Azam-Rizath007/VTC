@@ -25,6 +25,14 @@ interface Grade {
   subjects: Subject[]
 }
 
+const SUBJECT_OPTIONS = [
+  { value: 'Mathematics', label: 'Mathematics' },
+  { value: 'Science', label: 'Science' },
+  { value: 'English', label: 'English' },
+  { value: 'Tamil', label: 'Tamil' },
+  { value: 'History', label: 'History' },
+]
+
 export default function SetupPage() {
   const [grades, setGrades] = useState<Grade[]>([])
   const [loading, setLoading] = useState(true)
@@ -200,10 +208,13 @@ export default function SetupPage() {
         title={editSubject ? 'Edit Subject' : 'Add Subject'}
       >
         <div className="space-y-4">
-          <Input
+          <Select
             label="Subject Name"
+            options={SUBJECT_OPTIONS}
             value={subjectForm.name}
-            onChange={(e) => setSubjectForm({ ...subjectForm, name: e.target.value })}
+            onChange={(e) =>
+              setSubjectForm({ ...subjectForm, name: e.target.value })
+            }
           />
           <Select
             label="Grade"

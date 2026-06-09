@@ -205,3 +205,9 @@ model TeacherSalary {
   subject Subject @relation(fields: [subjectId], references: [id])
   grade   Grade   @relation(fields: [gradeId], references: [id])
 }
+
+
+model SystemConfig {
+  key   String @id
+  value String
+}
