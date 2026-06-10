@@ -7,6 +7,28 @@ const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! })
 const prisma = new PrismaClient({ adapter })
 
 async function main() {
+  // ✅ CHECK IF SEED ALREADY RUN
+  const seedFlag = await prisma.systemConfig.findUnique({
+    where: { key: 'seed_completed' },
+  })
+
+  if (seedFlag?.value === 'true') {
+    console.log('⚠️ Seed already executed. Skipping...')
+    return
+  }
+
+  const hash = (p: string) => bcrypt.hashSync(p, 10)
+
+  // 🔐 ENV VALUES (IMPORTANT CHANGE)
+  const SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL!
+  const SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD!
+
+  const ADMIN_EMAIL = process.env.ADMIN_EMAIL!
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD!
+
+  const TEACHER_EMAIL = process.env.TEACHER_EMAIL!
+  const TEACHER_PASSWORD = process.env.TEACHER_PASSWORD!
+
   // Institute
   await prisma.institute.upsert({
     where: { id: 'default' },
@@ -21,82 +43,117 @@ async function main() {
     },
   })
 
-  // Users
-  const hash = (p: string) => bcrypt.hashSync(p, 10)
-
-  const superAdmin = await prisma.user.upsert({
-    where: { email: 'superadmin@school.com' },
+  // Users (FROM ENV)
+  await prisma.user.upsert({
+    where: { email: SUPERADMIN_EMAIL },
     update: {},
-    create: { name: 'Super Admin', email: 'superadmin@school.com', password: hash('admin123'), role: Role.SUPER_ADMIN },
+    create: {
+      name: 'Super Admin',
+      email: SUPERADMIN_EMAIL,
+      password: hash(SUPERADMIN_PASSWORD),
+      role: Role.SUPER_ADMIN,
+    },
   })
 
-  const admin = await prisma.user.upsert({
-    where: { email: 'admin@school.com' },
+  await prisma.user.upsert({
+    where: { email: ADMIN_EMAIL },
     update: {},
-    create: { name: 'Admin User', email: 'admin@school.com', password: hash('admin123'), role: Role.ADMIN },
+    create: {
+      name: 'Admin User',
+      email: ADMIN_EMAIL,
+      password: hash(ADMIN_PASSWORD),
+      role: Role.ADMIN,
+    },
   })
 
   const teacher = await prisma.user.upsert({
-    where: { email: 'teacher@school.com' },
+    where: { email: TEACHER_EMAIL },
     update: {},
-    create: { name: 'Ali Hassan', email: 'teacher@school.com', password: hash('teacher123'), role: Role.TEACHER },
+    create: {
+      name: 'Teacher',
+      email: TEACHER_EMAIL,
+      password: hash(TEACHER_PASSWORD),
+      role: Role.TEACHER,
+    },
   })
 
   // Grades
-  const grade9 = await prisma.grade.upsert({ where: { name: 'Grade 9' }, update: {}, create: { name: 'Grade 9' } })
-  const grade10 = await prisma.grade.upsert({ where: { name: 'Grade 10' }, update: {}, create: { name: 'Grade 10' } })
+  const grade9 = await prisma.grade.upsert({
+    where: { name: 'Grade 9' },
+    update: {},
+    create: { name: 'Grade 9' },
+  })
+
+  const grade10 = await prisma.grade.upsert({
+    where: { name: 'Grade 10' },
+    update: {},
+    create: { name: 'Grade 10' },
+  })
 
   // Subjects
   const maths = await prisma.subject.upsert({
     where: { name_gradeId: { name: 'Mathematics', gradeId: grade10.id } },
     update: {},
-    create: { name: 'Mathematics', gradeId: grade10.id, fee: 3000, monthlySessionTarget: 10 },
+    create: {
+      name: 'Mathematics',
+      gradeId: grade10.id,
+      fee: 3000,
+      monthlySessionTarget: 10,
+    },
   })
+
   const science = await prisma.subject.upsert({
     where: { name_gradeId: { name: 'Science', gradeId: grade10.id } },
     update: {},
-    create: { name: 'Science', gradeId: grade10.id, fee: 3000, monthlySessionTarget: 10 },
+    create: {
+      name: 'Science',
+      gradeId: grade10.id,
+      fee: 3000,
+      monthlySessionTarget: 10,
+    },
   })
+
   const english = await prisma.subject.upsert({
     where: { name_gradeId: { name: 'English', gradeId: grade10.id } },
     update: {},
-    create: { name: 'English', gradeId: grade10.id, fee: 2500, monthlySessionTarget: 12 },
+    create: {
+      name: 'English',
+      gradeId: grade10.id,
+      fee: 2500,
+      monthlySessionTarget: 12,
+    },
   })
 
   // Teacher assignment
   await prisma.teacherAssignment.upsert({
-    where: { userId_subjectId_gradeId: { userId: teacher.id, subjectId: maths.id, gradeId: grade10.id } },
+    where: {
+      userId_subjectId_gradeId: {
+        userId: teacher.id,
+        subjectId: maths.id,
+        gradeId: grade10.id,
+      },
+    },
     update: {},
-    create: { userId: teacher.id, subjectId: maths.id, gradeId: grade10.id },
+    create: {
+      userId: teacher.id,
+      subjectId: maths.id,
+      gradeId: grade10.id,
+    },
   })
-
-  // Students
-  const s1 = await prisma.student.upsert({
-    where: { id: 'student-1' },
-    update: {},
-    create: { id: 'student-1', name: 'Ahmed Khan', gradeId: grade10.id, parentName: 'Imran Khan', parentContact: '0300-1234567' },
-  })
-  const s2 = await prisma.student.upsert({
-    where: { id: 'student-2' },
-    update: {},
-    create: { id: 'student-2', name: 'Sara Ali', gradeId: grade10.id, parentName: 'Tariq Ali', parentContact: '0301-7654321' },
-  })
-
-  // Enroll students
-  for (const sub of [maths, science, english]) {
-    for (const st of [s1, s2]) {
-      await prisma.studentSubject.upsert({
-        where: { studentId_subjectId: { studentId: st.id, subjectId: sub.id } },
-        update: {},
-        create: { studentId: st.id, subjectId: sub.id },
-      })
-    }
-  }
 
   console.log('✅ Seed complete')
-  console.log('  superadmin@school.com / admin123')
-  console.log('  admin@school.com      / admin123')
-  console.log('  teacher@school.com    / teacher123')
+  console.log('SuperAdmin:', SUPERADMIN_EMAIL)
+  console.log('Admin:', ADMIN_EMAIL)
+  console.log('Teacher:', TEACHER_EMAIL)
+
+  // ✅ MARK SEED AS COMPLETED
+  await prisma.systemConfig.upsert({
+    where: { key: 'seed_completed' },
+    update: { value: 'true' },
+    create: { key: 'seed_completed', value: 'true' },
+  })
 }
 
-main().catch(console.error).finally(() => prisma.$disconnect())
+main()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect())
