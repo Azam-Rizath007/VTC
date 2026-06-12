@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Edit, UserX, ClipboardList } from 'lucide-react'
+import { ArrowLeft, Edit, UserX, UserCheck, ClipboardList } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -63,8 +63,8 @@ export default function StudentDetailPage() {
   const [student, setStudent] = useState<StudentDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [showDeactivate, setShowDeactivate] = useState(false)
-  const [deactivating, setDeactivating] = useState(false)
+  const [showStatusDialog, setShowStatusDialog] = useState(false)
+  const [updatingStatus, setUpdatingStatus] = useState(false)
 
   const loadStudent = useCallback(async () => {
     setLoading(true)
@@ -81,11 +81,22 @@ export default function StudentDetailPage() {
     loadStudent()
   }, [loadStudent])
 
-  const handleDeactivate = async () => {
-    setDeactivating(true)
-    await authFetch(`/api/students/${id}`, { method: 'DELETE' })
-    setDeactivating(false)
-    setShowDeactivate(false)
+  const handleToggleStatus = async () => {
+    if (!student) return
+
+    const newStatus = student.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+
+    setUpdatingStatus(true)
+
+    await authFetch(`/api/students/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: newStatus,
+      }),
+    })
+
+    setUpdatingStatus(false)
+    setShowStatusDialog(false)
     loadStudent()
   }
 
@@ -130,12 +141,19 @@ export default function StudentDetailPage() {
             Attendance
           </Button>
         </Link>
-        {student.status === 'ACTIVE' && (
-          <Button size="sm" variant="danger" onClick={() => setShowDeactivate(true)}>
+        <Button
+          size="sm"
+          variant={student.status === 'ACTIVE' ? 'danger' : 'outline'}
+          onClick={() => setShowStatusDialog(true)}
+        >
+          {student.status === 'ACTIVE' ? (
             <UserX className="w-4 h-4" />
-            Deactivate
-          </Button>
-        )}
+          ) : (
+            <UserCheck className="w-4 h-4" />
+          )}
+
+          {student.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+        </Button>
       </div>
 
       <Card>
@@ -258,14 +276,18 @@ export default function StudentDetailPage() {
       />
 
       <ConfirmDialog
-        open={showDeactivate}
-        onClose={() => setShowDeactivate(false)}
-        onConfirm={handleDeactivate}
-        title="Deactivate Student"
-        message={`Are you sure you want to deactivate ${student.name}? They will no longer appear in active lists.`}
-        confirmLabel="Deactivate"
-        loading={deactivating}
-        danger
+        open={showStatusDialog}
+        onClose={() => setShowStatusDialog(false)}
+        onConfirm={handleToggleStatus}
+        title={student.status === 'ACTIVE' ? 'Deactivate Student' : 'Activate Student'}
+        message={
+          student.status === 'ACTIVE'
+            ? `Are you sure you want to deactivate ${student.name}? They will no longer appear in active lists.`
+            : `Are you sure you want to activate ${student.name}? They will appear in active lists again.`
+        }
+        confirmLabel={student.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+        loading={updatingStatus}
+        danger={student.status === 'ACTIVE'}
       />
     </div>
   )

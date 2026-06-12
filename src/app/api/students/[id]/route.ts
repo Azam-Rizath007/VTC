@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Role } from '@/generated/prisma'
+import { Role, StudentStatus } from '@/generated/prisma'
 import { isAuthUser, requireAuth } from '@/lib/api-auth'
-import { deactivateStudent, getStudentById, updateStudent } from '@/lib/services/students'
+// import { deactivateStudent, getStudentById, updateStudent } from '@/lib/services/students'
 import { studentSchema } from '@/lib/validations/student'
+import {
+  deactivateStudent,
+  getStudentById,
+  updateStudent,
+  updateStudentStatus,
+} from '@/lib/services/students'
 
 const ALLOWED_ROLES: Role[] = [Role.SUPER_ADMIN, Role.ADMIN]
 
@@ -28,16 +34,39 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const { id } = await params
     const body = await req.json()
+
+    // Status-only update (Activate / Deactivate)
+    if (
+      Object.keys(body).length === 1 &&
+      Object.values(StudentStatus).includes(body.status)
+    ) {
+      const student = await updateStudentStatus(id, body.status)
+
+      return NextResponse.json({ student })
+    }
+
+    // Normal student edit
     const parsed = studentSchema.safeParse(body)
+
     if (!parsed.success) {
-      return NextResponse.json({ error: parsed.error.issues[0]?.message || 'Invalid data' }, { status: 400 })
+      return NextResponse.json(
+        {
+          error: parsed.error.issues[0]?.message || 'Invalid data',
+        },
+        { status: 400 }
+      )
     }
 
     const student = await updateStudent(id, parsed.data)
+
     return NextResponse.json({ student })
   } catch (err) {
     console.error(err)
-    return NextResponse.json({ error: 'Failed to update student' }, { status: 500 })
+
+    return NextResponse.json(
+      { error: 'Failed to update student' },
+      { status: 500 }
+    )
   }
 }
 

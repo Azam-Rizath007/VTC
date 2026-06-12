@@ -37,10 +37,16 @@ export function AdminDashboard() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    authFetch<DashboardStats>('/api/dashboard/stats').then(({ data }) => {
-      if (data) setStats(data)
-      setLoading(false)
-    })
+    const loadStats = async () => {
+      try {
+        const { data } = await authFetch<DashboardStats>('/api/dashboard/stats')
+        if (data) setStats(data)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadStats()
   }, [])
 
   if (loading) return <LoadingState message="Loading dashboard..." />
@@ -49,7 +55,7 @@ export function AdminDashboard() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-lg font-bold text-gray-900">Good morning, {user?.name.split(' ')[0]} 👋</h1>
+        <h1 className="text-lg font-bold text-gray-900">Good morning, {user?.name?.split(' ')[0] || 'Admin'} 👋</h1>
         <p className="text-sm text-gray-500">Here&apos;s what&apos;s happening today</p>
       </div>
 

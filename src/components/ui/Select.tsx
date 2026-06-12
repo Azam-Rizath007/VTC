@@ -2,16 +2,23 @@ import { cn } from '@/lib/utils'
 import { SelectHTMLAttributes, forwardRef } from 'react'
 import { ChevronDown } from 'lucide-react'
 
+interface SelectOption {
+  value: string
+  label: string
+  disabled?: boolean
+}
+
 interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label?: string
   error?: string
-  options: { value: string; label: string }[]
+  options: SelectOption[]
   placeholder?: string
 }
 
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(
   ({ className, label, error, options, placeholder, id, ...props }, ref) => {
     const selectId = id || label?.toLowerCase().replace(/\s+/g, '-')
+
     return (
       <div className="w-full">
         {label && (
@@ -19,6 +26,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
             {label}
           </label>
         )}
+
         <div className="relative">
           <select
             ref={ref}
@@ -32,14 +40,18 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
             {...props}
           >
             {placeholder && <option value="">{placeholder}</option>}
+
             {options.map((o) => (
-              <option key={o.value} value={o.value}>
+              <option key={o.value} value={o.value} disabled={o.disabled}>
                 {o.label}
+                {o.disabled ? ' - Already assigned' : ''}
               </option>
             ))}
           </select>
+
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
         </div>
+
         {error && <p className="mt-1 text-xs text-red-500">{error}</p>}
       </div>
     )

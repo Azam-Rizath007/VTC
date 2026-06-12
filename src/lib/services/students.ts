@@ -154,3 +154,10 @@ export async function deactivateStudent(id: string) {
     data: { status: StudentStatus.INACTIVE },
   })
 }
+
+export async function updateStudentStatus(id: string, status: StudentStatus) {
+  return prisma.student.update({
+    where: { id },
+    data: { status },
+  })
+}
