@@ -193,7 +193,7 @@ export default function FeesPage() {
     setStudentSearch('')
     setPreview(null)
     resetPaymentForm()
-    loadPreview(student.id, month, year)
+    loadPreview(student.id, Number(month), year)
   }
 
   const handleClearStudent = () => {
@@ -211,7 +211,7 @@ export default function FeesPage() {
   }
 
   const handleMonthYearChange = (newMonth: number, newYear: number) => {
-    setMonth(newMonth)
+    setMonth(String(newMonth))
     setYear(newYear)
     resetPaymentForm()
     if (selectedStudent) loadPreview(selectedStudent.id, newMonth, newYear)
@@ -221,7 +221,7 @@ export default function FeesPage() {
     setSelectedStudent(null)
     setStudentSearch('')
     setPreview(null)
-    setMonth(now.getMonth() + 1)
+    setMonth(String(now.getMonth() + 1))
     setYear(now.getFullYear())
     resetPaymentForm()
     setShowPayment(true)
@@ -421,7 +421,7 @@ export default function FeesPage() {
               label="Year"
               type="number"
               value={year}
-              onChange={(e) => handleMonthYearChange(month, Number(e.target.value))}
+              onChange={(e) => handleMonthYearChange(Number(month), Number(e.target.value))}
             />
           </div>
 

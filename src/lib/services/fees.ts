@@ -217,7 +217,7 @@ export async function recordBulkPayment(data: BulkPaymentInput) {
   // We apply the new discount only against subjects that haven't had a discount yet.
   const subjectData = gradeSubjects.map((subject) => {
     const existing = student.payments.find((p) => p.subjectId === subject.id)
-    const subjectRatio = totalFee > 0 ? subject.fee / totalFee : 1 / student.subjects.length
+    const subjectRatio = totalFee > 0 ? subject.fee / totalFee : 1 / gradeSubjects.length
     // Only apply discount if not already discounted (i.e. no prior payment record)
     const subDiscount = existing ? (existing.discount) : Math.round(safeDiscount * subjectRatio)
     const priorPaid = existing?.amountPaid ?? 0
