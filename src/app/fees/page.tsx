@@ -81,10 +81,12 @@ export default function FeesPage() {
   const [loading, setLoading] = useState(true)
   const [showPayment, setShowPayment] = useState(false)
   const [listSearch, setListSearch] = useState('')
-  const [filterMonth, setFilterMonth] = useState('')
+  const currentMonth = String(new Date().getMonth() + 1)
+  const [filterMonth, setFilterMonth] = useState(currentMonth)
   const [filterYear, setFilterYear] = useState(new Date().getFullYear().toString())
   const [filterGradeId, setFilterGradeId] = useState('')
   const [grades, setGrades] = useState<{ id: string; name: string }[]>([])
+  const [status, setStatus] = useState('')
 
   // Payment modal state
   const [studentSearch, setStudentSearch] = useState('')
@@ -157,6 +159,7 @@ export default function FeesPage() {
     if (filterMonth) params.set('month', filterMonth)
     if (filterYear) params.set('year', filterYear)
     if (filterGradeId) params.set('gradeId', filterGradeId)
+    if (status) params.set('status', status)
 
     const [statsRes, paymentsRes, studentsRes, gradesRes] = await Promise.all([
       authFetch<FeeStats>('/api/fees/stats'),
@@ -169,7 +172,7 @@ export default function FeesPage() {
     if (studentsRes.data?.students) setStudents(studentsRes.data.students)
     if (gradesRes.data?.grades) setGrades(gradesRes.data.grades)
     setLoading(false)
-  }, [listSearch, filterMonth, filterYear, filterGradeId])
+  }, [listSearch, filterMonth, filterYear, filterGradeId, status])
 
   useEffect(() => {
     const timer = setTimeout(load, 300)
@@ -321,11 +324,11 @@ export default function FeesPage() {
       {/* Payment list filters */}
       <div className="space-y-2">
         <SearchBar placeholder="Search by student name..." onChange={setListSearch} />
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <Select
             placeholder="Month"
             options={MONTHS}
-            value={month}
+            value={filterMonth}
             onChange={(e) => setFilterMonth(e.target.value)}
           />
           <input
@@ -341,6 +344,16 @@ export default function FeesPage() {
             value={filterGradeId}
             onChange={(e) => setFilterGradeId(e.target.value)}
           />
+          <Select
+            placeholder="All"
+            options={[
+              { value: 'PAID', label: 'Paid' },
+              { value: 'PARTIAL', label: 'Partial' },
+              { value: 'PENDING', label: 'Unpaid' },
+            ]}
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          />
         </div>
       </div>
       <div className="space-y-3">
@@ -349,10 +362,11 @@ export default function FeesPage() {
             key={payment.key}
             title={payment.studentName}
             subtitle={`${MONTHS[payment.month - 1]?.label} ${payment.year} · ${payment.grade}`}
-            meta={payment.paidAt ? formatDate(payment.paidAt) : undefined}
+            // meta={`Expected ${formatCurrency(payment.expectedAmount)} · Paid ${formatCurrency(payment.paidAmount)} · Balance ${formatCurrency(payment.balance)}`}
+            meta={`${formatCurrency(payment.amountPaid)}${payment.paidAt ? ` · ${formatDate(payment.paidAt)}` : ''}`}
             badge={
               <Badge variant={payment.status === 'PAID' ? 'success' : payment.status === 'PARTIAL' ? 'warning' : 'danger'}>
-                {formatCurrency(payment.amountPaid)}
+                {payment.status === 'PAID' ? 'Paid' : payment.status === 'PARTIAL' ? 'Partial' : 'Unpaid'}
               </Badge>
             }
           />

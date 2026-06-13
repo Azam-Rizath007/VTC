@@ -23,6 +23,7 @@ interface DashboardStats {
   activeStudents: number
   todayCollection: number
   monthlyRevenue: number
+  yearlyRevenue: number
   pendingFees: number
   todayClasses: number
   teacherSessionsCompleted: number
@@ -60,7 +61,8 @@ export function AdminDashboard() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatWidget label="Total Students" value={stats.totalStudents} icon={GraduationCap} color="maroon" />
+        {/* <StatWidget label="Total Students" value={stats.totalStudents} icon={GraduationCap} color="maroon" /> */}
+        <StatWidget label="Yearly Revenue" value={formatCurrency(stats.yearlyRevenue)} icon={TrendingUp} color="green" />
         <StatWidget label="Active Students" value={stats.activeStudents} icon={Users} color="blue" />
         <StatWidget label="Today's Collection" value={formatCurrency(stats.todayCollection)} icon={CreditCard} color="green" />
         <StatWidget label="Pending Fees" value={stats.pendingFees} icon={AlertCircle} color="orange" />

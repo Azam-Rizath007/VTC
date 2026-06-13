@@ -18,11 +18,13 @@ export async function GET(req: NextRequest) {
   if (!isAuthUser(auth)) return auth
 
   const { searchParams } = req.nextUrl
+
   const payments = await listPayments({
     search: searchParams.get('search') || undefined,
     month: searchParams.get('month') ? Number(searchParams.get('month')) : undefined,
     year: searchParams.get('year') ? Number(searchParams.get('year')) : undefined,
     gradeId: searchParams.get('gradeId') || undefined,
+    status: searchParams.get('status') as any || undefined,
   })
 
   return NextResponse.json({ payments })

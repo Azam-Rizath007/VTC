@@ -6,6 +6,8 @@ export async function getDashboardStats(role: Role, userId?: string) {
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const yearStart = new Date(now.getFullYear(), 0, 1)
+  const yearEnd = new Date(now.getFullYear() + 1, 0, 1)
 
   const [totalStudents, activeStudents, todayPayments, monthlyPayments, pendingPayments, todaySessions] =
     await Promise.all([
@@ -13,6 +15,15 @@ export async function getDashboardStats(role: Role, userId?: string) {
       prisma.student.count({ where: { status: StudentStatus.ACTIVE } }),
       prisma.feePayment.findMany({ where: { paidAt: { gte: todayStart } } }),
       prisma.feePayment.findMany({ where: { paidAt: { gte: monthStart } } }),
+       // YEARLY REVENUE
+      // prisma.feePayment.findMany({
+      //   where: {
+      //     paidAt: {
+      //       gte: yearStart,
+      //       lt: yearEnd,
+      //     },
+      //   },
+      // }),
       prisma.feePayment.findMany({
         where: { status: { not: PaymentStatus.PAID } },
         include: { student: { include: { grade: true } }, subject: true },
@@ -22,6 +33,18 @@ export async function getDashboardStats(role: Role, userId?: string) {
 
   const todayCollection = todayPayments.reduce((s, p) => s + p.amountPaid, 0)
   const monthlyRevenue = monthlyPayments.reduce((s, p) => s + p.amountPaid, 0)
+  // const yearlyRevenue = yearlyPayments.reduce((s, p) => s + p.amountPaid, 0)
+    const yearlyRevenueAgg = await prisma.feePayment.aggregate({
+    _sum: { amountPaid: true },
+    where: {
+      paidAt: {
+        gte: yearStart,
+        lt: yearEnd,
+      },
+    },
+  })
+
+  const yearlyRevenue = yearlyRevenueAgg._sum.amountPaid ?? 0
 
   const pendingStudentIds = new Set(pendingPayments.map((p) => p.studentId))
 
@@ -102,6 +125,7 @@ export async function getDashboardStats(role: Role, userId?: string) {
     activeStudents,
     todayCollection,
     monthlyRevenue,
+    yearlyRevenue,
     pendingFees: pendingStudentIds.size,
     todayClasses: todaySessions,
     teacherSessionsCompleted: todaySessions,

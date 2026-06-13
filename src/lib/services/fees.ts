@@ -28,12 +28,77 @@ export interface PaymentFilters {
   month?: number
   year?: number
   gradeId?: string
+  status?: PaymentStatus
 }
 
 function calcStatus(balance: number, amountPaid: number): PaymentStatus {
   if (balance === 0 && amountPaid > 0) return PaymentStatus.PAID
   if (amountPaid > 0) return PaymentStatus.PARTIAL
   return PaymentStatus.PENDING
+}
+
+function calcMonthlyStatus(balance: number, paidAmount: number): PaymentStatus {
+  if (balance <= 0 && paidAmount > 0) return PaymentStatus.PAID
+  if (paidAmount > 0) return PaymentStatus.PARTIAL
+  return PaymentStatus.PENDING
+}
+
+export async function syncStudentMonthlyFee(studentId: string, month: number, year: number) {
+  const student = await prisma.student.findUnique({
+    where: { id: studentId },
+    include: {
+      grade: { include: { subjects: true } },
+      payments: {
+        where: { month, year },
+      },
+    },
+  })
+
+  if (!student) return null
+
+  const expectedAmount = student.grade.subjects.reduce((sum, subject) => sum + subject.fee, 0)
+  const paidAmount = student.payments.reduce((sum, payment) => sum + payment.amountPaid, 0)
+  const discount = student.payments.reduce((sum, payment) => sum + payment.discount, 0)
+  const balance = Math.max(0, expectedAmount - paidAmount - discount)
+  const status = calcMonthlyStatus(balance, paidAmount)
+
+  return prisma.studentMonthlyFee.upsert({
+    where: {
+      studentId_month_year: {
+        studentId,
+        month,
+        year,
+      },
+    },
+    update: {
+      expectedAmount,
+      paidAmount,
+      discount,
+      balance,
+      status,
+    },
+    create: {
+      studentId,
+      month,
+      year,
+      expectedAmount,
+      paidAmount,
+      discount,
+      balance,
+      status,
+    },
+  })
+}
+
+export async function ensureMonthlyFees(month: number, year: number) {
+  const students = await prisma.student.findMany({
+    where: { status: 'ACTIVE' },
+    select: { id: true },
+  })
+
+  await Promise.all(
+    students.map((student) => syncStudentMonthlyFee(student.id, month, year))
+  )
 }
 
 export async function getFeeStats() {
@@ -97,45 +162,56 @@ export async function getFeeStats() {
 }
 
 export async function listPayments(filters: PaymentFilters = {}) {
-  const { search, month, year, gradeId } = filters
+  const { search, month, year, gradeId, status } = filters
 
-  const rows = await prisma.feePayment.findMany({
+  const now = new Date()
+  const selectedMonth = month ?? now.getMonth() + 1
+  const selectedYear = year ?? now.getFullYear()
+
+  await ensureMonthlyFees(selectedMonth, selectedYear)
+
+  const rows = await prisma.studentMonthlyFee.findMany({
     where: {
-      ...(month && { month }),
-      ...(year && { year }),
-      ...(gradeId && { student: { gradeId } }),
-      ...(search && {
-        student: {
+      month: selectedMonth,
+      year: selectedYear,
+      ...(status && { status }),
+      student: {
+        ...(gradeId && { gradeId }),
+        ...(search && {
           OR: [
             { name: { contains: search, mode: 'insensitive' } },
             { parentName: { contains: search, mode: 'insensitive' } },
+            { parentContact: { contains: search, mode: 'insensitive' } },
           ],
-        },
-      }),
+        }),
+      },
     },
-    include: { student: { include: { grade: true } } },
-    orderBy: [{ year: 'desc' }, { month: 'desc' }, { updatedAt: 'desc' }],
+    include: {
+      student: {
+        include: {
+          grade: true,
+        },
+      },
+    },
+    orderBy: {
+      updatedAt: 'desc',
+    },
   })
 
-  // Aggregate by student+month+year
-  const map = new Map<string, {
-    key: string; studentId: string; studentName: string; grade: string
-    month: number; year: number; amountPaid: number; balance: number; status: string; paidAt: string | null
-  }>()
-  for (const p of rows) {
-    const key = `${p.studentId}-${p.month}-${p.year}`
-    if (!map.has(key)) {
-      map.set(key, { key, studentId: p.studentId, studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, amountPaid: 0, balance: 0, status: 'PENDING', paidAt: null })
-    }
-    const entry = map.get(key)!
-    entry.amountPaid += p.amountPaid
-    entry.balance += p.balance
-    if (p.paidAt) entry.paidAt = p.paidAt.toISOString()
-  }
-
-  return [...map.values()].map((e) => ({
-    ...e,
-    status: e.balance === 0 && e.amountPaid > 0 ? 'PAID' : e.amountPaid > 0 ? 'PARTIAL' : 'PENDING',
+  return rows.map((row) => ({
+    key: `${row.studentId}-${row.month}-${row.year}`,
+    studentId: row.studentId,
+    studentName: row.student.name,
+    grade: row.student.grade.name,
+    month: row.month,
+    year: row.year,
+    expectedAmount: row.expectedAmount,
+    amountPaid: row.paidAmount,
+    paidAmount: row.paidAmount,
+    discount: row.discount,
+    balance: row.balance,
+    status: row.status,
+    paidAt: null,
   }))
 }
 
@@ -286,6 +362,8 @@ export async function recordBulkPayment(data: BulkPaymentInput) {
   const totalBalance = results.reduce((s, r) => s + r.balance, 0)
   const totalAmountPaid = results.reduce((s, r) => s + r.amountPaid, 0)
 
+  await syncStudentMonthlyFee(studentId, month, year)
+
   return {
     payments: results,
     summary: {
@@ -331,14 +409,16 @@ export async function recordPayment(data: PaymentInput) {
   }
 
   if (existing) {
-    return prisma.feePayment.update({
+    const updated = await prisma.feePayment.update({
       where: { id: existing.id },
       data: payload,
       include: { student: true, subject: true },
     })
+    await syncStudentMonthlyFee(data.studentId, data.month, data.year)
+    return updated
   }
-
-  return prisma.feePayment.create({
+  
+  const created = await prisma.feePayment.create({
     data: {
       studentId: data.studentId,
       subjectId: data.subjectId,
@@ -348,6 +428,9 @@ export async function recordPayment(data: PaymentInput) {
     },
     include: { student: true, subject: true },
   })
+
+  await syncStudentMonthlyFee(data.studentId, data.month, data.year)
+  return created
 }
 
 export async function getPaymentById(id: string) {

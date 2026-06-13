@@ -125,6 +125,7 @@ model Student {
   subjects    StudentSubject[]
   attendances Attendance[]
   payments    FeePayment[]
+  monthlyFees StudentMonthlyFee[]
 }
 
 model StudentSubject {
@@ -187,6 +188,28 @@ model FeePayment {
 
   student Student @relation(fields: [studentId], references: [id])
   subject Subject @relation(fields: [subjectId], references: [id])
+}
+
+model StudentMonthlyFee {
+  id             String        @id @default(cuid())
+  studentId      String
+  month          Int
+  year           Int
+
+  expectedAmount Int
+  paidAmount     Int           @default(0)
+  discount        Int           @default(0)
+  balance         Int
+  status          PaymentStatus @default(PENDING)
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  student         Student       @relation(fields: [studentId], references: [id])
+
+  @@unique([studentId, month, year])
+  @@index([month, year, status])
+  @@index([studentId])
 }
 
 model TeacherSalary {
