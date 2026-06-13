@@ -16,7 +16,7 @@ import {
   CheckCircle,
   Clock,
 } from 'lucide-react'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatDate } from '@/lib/utils'
 
 interface DashboardStats {
   totalStudents: number
@@ -26,8 +26,8 @@ interface DashboardStats {
   pendingFees: number
   todayClasses: number
   teacherSessionsCompleted: number
-  recentPayments: { name: string; subject: string; amount: number; time: string }[]
-  pendingStudents: { name: string; grade: string; amount: number }[]
+  recentPayments: { studentName: string; grade: string; month: number; year: number; amount: number; paidAt: string }[]
+  pendingStudents: { studentName: string; grade: string; month: number; year: number; balance: number }[]
   salaryAlerts: { teacher: string; subject: string; sessions: number; payable: number }[]
 }
 
@@ -77,19 +77,18 @@ export function AdminDashboard() {
         <Card>
           <CardHeader>
             <CardTitle>Recent Payments</CardTitle>
-            <Badge variant="success">Today</Badge>
           </CardHeader>
-          <div className="space-y-3">
+          <div className="space-y-2">
             {stats.recentPayments.length === 0 ? (
-              <p className="text-sm text-gray-400">No payments yet today.</p>
+              <p className="text-sm text-gray-400">No recent payments.</p>
             ) : (
               stats.recentPayments.map((p, i) => (
-                <div key={i} className="flex items-center justify-between">
+                <div key={i} className="flex justify-between text-sm">
                   <div>
-                    <p className="text-sm font-medium text-gray-900">{p.name}</p>
-                    <p className="text-xs text-gray-400">{p.subject} · {p.time}</p>
+                    <p className="font-medium">{p.studentName}</p>
+                    <p className="text-xs text-gray-400">{p.grade} · {formatDate(p.paidAt)}</p>
                   </div>
-                  <span className="text-sm font-semibold text-green-600">{formatCurrency(p.amount)}</span>
+                  <span className="font-semibold text-green-600">{formatCurrency(p.amount)}</span>
                 </div>
               ))
             )}
@@ -101,17 +100,17 @@ export function AdminDashboard() {
             <CardTitle>Pending Fees</CardTitle>
             <Badge variant="warning">{stats.pendingStudents.length} shown</Badge>
           </CardHeader>
-          <div className="space-y-3">
+          <div className="space-y-2">
             {stats.pendingStudents.length === 0 ? (
               <p className="text-sm text-gray-400">No pending fees.</p>
             ) : (
               stats.pendingStudents.map((s, i) => (
-                <div key={i} className="flex items-center justify-between">
+                <div key={i} className="flex justify-between text-sm">
                   <div>
-                    <p className="text-sm font-medium text-gray-900">{s.name}</p>
+                    <p className="font-medium">{s.studentName}</p>
                     <p className="text-xs text-gray-400">{s.grade}</p>
                   </div>
-                  <span className="text-sm font-semibold text-red-500">{formatCurrency(s.amount)}</span>
+                  <span className="font-semibold text-red-500">{formatCurrency(s.balance)}</span>
                 </div>
               ))
             )}

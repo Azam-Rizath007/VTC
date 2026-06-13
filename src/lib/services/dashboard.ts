@@ -25,18 +25,38 @@ export async function getDashboardStats(role: Role, userId?: string) {
 
   const pendingStudentIds = new Set(pendingPayments.map((p) => p.studentId))
 
-  const recentPayments = await prisma.feePayment.findMany({
-    where: { paidAt: { not: null } },
-    include: { student: true, subject: true },
+  // Recent payments: aggregate by student+month+year, same as /fees
+  const weekStart = new Date(todayStart)
+  weekStart.setDate(weekStart.getDate() - 7)
+  const recentRaw = await prisma.feePayment.findMany({
+    where: { paidAt: { gte: weekStart } },
+    include: { student: { include: { grade: true } } },
     orderBy: { paidAt: 'desc' },
-    take: 5,
   })
+  const recentMap = new Map<string, { studentName: string; grade: string; month: number; year: number; amount: number; paidAt: Date }>()
+  for (const p of recentRaw) {
+    const key = `${p.studentId}-${p.month}-${p.year}`
+    if (!recentMap.has(key)) {
+      recentMap.set(key, { studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, amount: 0, paidAt: p.paidAt! })
+    }
+    recentMap.get(key)!.amount += p.amountPaid
+    if (p.paidAt! > recentMap.get(key)!.paidAt) recentMap.get(key)!.paidAt = p.paidAt!
+  }
+  const recentPayments = [...recentMap.values()]
+    .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
+    .slice(0, 10)
+    .map((p) => ({ ...p, paidAt: p.paidAt.toISOString() }))
 
-  const pendingStudents = pendingPayments.slice(0, 5).map((p) => ({
-    name: p.student.name,
-    grade: p.student.grade.name,
-    amount: p.balance,
-  }))
+  // Pending fees: aggregate by student+month+year, same as /fees
+  const overdueMap = new Map<string, { studentName: string; grade: string; month: number; year: number; balance: number }>()
+  for (const p of pendingPayments) {
+    const key = `${p.studentId}-${p.month}-${p.year}`
+    if (!overdueMap.has(key)) {
+      overdueMap.set(key, { studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, balance: 0 })
+    }
+    overdueMap.get(key)!.balance += p.balance
+  }
+  const pendingStudents = [...overdueMap.values()].slice(0, 10)
 
   const salaryAlerts = await prisma.teacherSalary.findMany({
     where: {
@@ -86,12 +106,7 @@ export async function getDashboardStats(role: Role, userId?: string) {
     todayClasses: todaySessions,
     teacherSessionsCompleted: todaySessions,
     absentToday,
-    recentPayments: recentPayments.map((p) => ({
-      name: p.student.name,
-      subject: p.subject.name,
-      amount: p.amountPaid,
-      time: p.paidAt?.toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' }) ?? '',
-    })),
+    recentPayments,
     pendingStudents,
     salaryAlerts: salaryAlerts.map((s) => ({
       teacher: s.teacher.name,

@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Edit, UserX, UserCheck, ClipboardList } from 'lucide-react'
+import { ArrowLeft, Edit, UserX, UserCheck, ClipboardList, Share2 } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -55,6 +55,7 @@ export default function StudentDetailPage() {
   const [showForm, setShowForm] = useState(false)
   const [showStatusDialog, setShowStatusDialog] = useState(false)
   const [updatingStatus, setUpdatingStatus] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const loadStudent = useCallback(async () => {
     setLoading(true)
@@ -131,6 +132,49 @@ export default function StudentDetailPage() {
             Attendance
           </Button>
         </Link>
+        {/* <Button
+          size="sm"
+          variant={copied ? 'success' : 'outline'}
+          onClick={async () => {
+            const publicUrl = `${window.location.origin}/p/${student.id}`
+
+            try {
+              await navigator.clipboard.writeText(publicUrl)
+              setCopied(true)
+
+              setTimeout(() => {
+                setCopied(false)
+              }, 1500)
+            } catch {
+              setCopied(false)
+            }
+          }}
+        >
+          <Share2 className="w-4 h-4" />
+          {copied ? 'Copied' : 'Share Profile'}
+        </Button> */}
+        <Button
+          size="sm"
+          variant="outline"
+          className={copied ? 'bg-green-50 text-green-700 border-green-200' : ''}
+          onClick={async () => {
+            const publicUrl = `${window.location.origin}/p/${student.id}`
+
+            try {
+              await navigator.clipboard.writeText(publicUrl)
+              setCopied(true)
+
+              setTimeout(() => {
+                setCopied(false)
+              }, 1500)
+            } catch {
+              setCopied(false)
+            }
+          }}
+        >
+          <Share2 className="w-4 h-4" />
+          {copied ? 'Copied' : 'Share Profile'}
+        </Button>
         <Button
           size="sm"
           variant={student.status === 'ACTIVE' ? 'danger' : 'outline'}
