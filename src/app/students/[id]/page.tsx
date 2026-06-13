@@ -10,7 +10,7 @@ import { LoadingState } from '@/components/ui/LoadingState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { StudentForm } from '@/components/students/StudentForm'
 import { authFetch } from '@/lib/client-api'
-import { formatCurrency, formatDate } from '@/lib/utils'
+import { formatCurrency } from '@/lib/utils'
 import type { StudentFormData } from '@/lib/validations/student'
 
 interface StudentDetail {
@@ -23,14 +23,6 @@ interface StudentDetail {
   grade: { id: string; name: string }
   subjects: { subject: { id: string; name: string; fee: number } }[]
   pendingBalance: number
-  feeStatus: {
-    subjectName: string
-    fee: number
-    amountDue: number
-    amountPaid: number
-    balance: number
-    status: string
-  }[]
   attendanceSummary: {
     subject: string
     present: number
@@ -38,14 +30,12 @@ interface StudentDetail {
     total: number
   }[]
   paymentHistory: {
-    id: string
     month: number
     year: number
     amountPaid: number
     balance: number
     status: string
     paidAt?: string | null
-    subject: { name: string }
   }[]
 }
 
@@ -187,35 +177,12 @@ export default function StudentDetailPage() {
         <div className="flex flex-wrap gap-2">
           {student.subjects.map(({ subject }) => (
             <Badge key={subject.id} variant="maroon">
-              {subject.name} · {formatCurrency(subject.fee)}
+              {subject.name}
             </Badge>
           ))}
         </div>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Fee Status (This Month)</CardTitle>
-        </CardHeader>
-        <div className="space-y-3">
-          {student.feeStatus.map((fee) => (
-            <div key={fee.subjectName} className="flex items-center justify-between text-sm">
-              <div>
-                <p className="font-medium">{fee.subjectName}</p>
-                <p className="text-xs text-gray-400">
-                  Paid {formatCurrency(fee.amountPaid)} of {formatCurrency(fee.amountDue)}
-                </p>
-              </div>
-              <div className="text-right">
-                {statusBadge(fee.status)}
-                {fee.balance > 0 && (
-                  <p className="text-xs text-red-500 mt-1">{formatCurrency(fee.balance)} due</p>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
 
       <Card>
         <CardHeader>
@@ -250,14 +217,8 @@ export default function StudentDetailPage() {
         ) : (
           <div className="space-y-3">
             {student.paymentHistory.map((payment) => (
-              <div key={payment.id} className="flex items-center justify-between text-sm">
-                <div>
-                  <p className="font-medium">{payment.subject.name}</p>
-                  <p className="text-xs text-gray-400">
-                    {MONTHS[payment.month - 1]} {payment.year}
-                    {payment.paidAt && ` · ${formatDate(payment.paidAt)}`}
-                  </p>
-                </div>
+              <div key={`${payment.year}-${payment.month}`} className="flex items-center justify-between text-sm">
+                <p className="font-medium">{MONTHS[payment.month - 1]} {payment.year}</p>
                 <div className="text-right">
                   <p className="font-semibold text-green-600">{formatCurrency(payment.amountPaid)}</p>
                   {statusBadge(payment.status)}

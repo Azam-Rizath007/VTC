@@ -28,39 +28,18 @@ interface Teacher {
   assignments: Assignment[]
 }
 
-interface Salary {
-  id: string
-  completedSessions: number
-  requiredSessions: number
-  rate: number
-  totalPayable: number
-  status: string
-  teacher: { name: string }
-  subject: { name: string }
-  grade: { name: string }
-}
-
 interface Grade {
   id: string
   name: string
   subjects: { id: string; name: string }[]
 }
 
-const MONTHS = [
-  'January','February','March','April','May','June',
-  'July','August','September','October','November','December',
-]
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TeachersPage() {
-  const now = new Date()
   const [teachers, setTeachers] = useState<Teacher[]>([])
-  const [salaries, setSalaries] = useState<Salary[]>([])
   const [grades, setGrades] = useState<Grade[]>([])
   const [loading, setLoading] = useState(true)
-  const [month, setMonth] = useState(now.getMonth() + 1)
-  const [year, setYear] = useState(now.getFullYear())
 
   // ── Create / Edit teacher modal ──
   const [showTeacherModal, setShowTeacherModal] = useState(false)
@@ -81,16 +60,14 @@ export default function TeachersPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [teachersRes, salariesRes, gradesRes] = await Promise.all([
+    const [teachersRes, gradesRes] = await Promise.all([
       authFetch<{ teachers: Teacher[] }>('/api/teachers/assignments'),
-      authFetch<{ salaries: Salary[] }>(`/api/teachers/salary?month=${month}&year=${year}`),
       authFetch<{ grades: Grade[] }>('/api/grades'),
     ])
     if (teachersRes.data?.teachers) setTeachers(teachersRes.data.teachers)
-    if (salariesRes.data?.salaries) setSalaries(salariesRes.data.salaries)
     if (gradesRes.data?.grades) setGrades(gradesRes.data.grades)
     setLoading(false)
-  }, [month, year])
+  }, [])
 
   useEffect(() => { load() }, [load])
 
@@ -215,15 +192,30 @@ export default function TeachersPage() {
     load()
   }
 
-  const markPaid = async (id: string) => {
-    await authFetch('/api/teachers/salary', { method: 'PATCH', body: JSON.stringify({ id }) })
-    load()
-  }
-
   // ─── Derived ────────────────────────────────────────────────────────────────
 
-  const subjectOptions =
-    grades.find((g) => g.id === assignForm.gradeId)?.subjects.map((s) => ({ value: s.id, label: s.name })) ?? []
+  const subjectOptions = (() => {
+    const grade = grades.find((g) => g.id === assignForm.gradeId)
+    if (!grade) return []
+    // Collect subjectIds already assigned in this grade by any other teacher
+    const takenSubjectIds = new Set(
+      teachers
+        .filter((t) => t.id !== assignTarget?.id)
+        .flatMap((t) => t.assignments)
+        .filter((a) => a.grade.name === grade.name)
+        .map((a) => {
+          // assignments only carry subject.name, so resolve id via grade.subjects
+          const match = grade.subjects.find((s) => s.name === a.subject.name)
+          return match?.id
+        })
+        .filter(Boolean)
+    )
+    return grade.subjects.map((s) => ({
+      value: s.id,
+      label: s.name,
+      disabled: takenSubjectIds.has(s.id),
+    }))
+  })()
 
   if (loading) return <LoadingState message="Loading teachers..." />
 
@@ -308,49 +300,6 @@ export default function TeachersPage() {
               )}
             </div>
           ))}
-        </div>
-      </Card>
-
-      {/* Salary month/year picker */}
-      <div className="grid grid-cols-2 gap-3">
-        <Select
-          label="Month"
-          options={MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))}
-          value={String(month)}
-          onChange={(e) => setMonth(Number(e.target.value))}
-        />
-        <Input label="Year" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} />
-      </div>
-
-      {/* Salary report */}
-      <Card>
-        <CardHeader><CardTitle>Salary Report — {MONTHS[month - 1]} {year}</CardTitle></CardHeader>
-        <div className="space-y-3">
-          {salaries.length === 0 ? (
-            <p className="text-sm text-gray-400">No salary records for this month.</p>
-          ) : (
-            salaries.map((s) => (
-              <div key={s.id} className="flex items-center justify-between p-3 rounded-xl border border-gray-100">
-                <div>
-                  <p className="text-sm font-medium">{s.teacher.name}</p>
-                  <p className="text-xs text-gray-400">
-                    {s.subject.name} · {s.grade.name} · {s.completedSessions}/{s.requiredSessions} sessions
-                  </p>
-                  <p className="text-xs text-gray-500">Rate: {formatCurrency(s.rate)}/session</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-semibold text-indigo-700">{formatCurrency(s.totalPayable)}</p>
-                  {s.status === 'PAID' ? (
-                    <Badge variant="success">Paid</Badge>
-                  ) : s.completedSessions >= s.requiredSessions ? (
-                    <Button size="sm" onClick={() => markPaid(s.id)}>Mark Paid</Button>
-                  ) : (
-                    <Badge variant="warning">Pending</Badge>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
         </div>
       </Card>
 

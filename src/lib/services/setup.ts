@@ -69,13 +69,11 @@ export async function assignTeacher(data: TeacherAssignmentInput) {
       subjectId: data.subjectId,
       gradeId: data.gradeId,
       userId: { not: data.userId },
+      user: { isActive: true },
     },
-    include: { user: { select: { name: true } } },
   })
   if (conflict) {
-    throw new Error(
-      `This subject is already assigned to ${conflict.user.name} for this grade. Remove that assignment first.`
-    )
+    throw new Error('This subject is already assigned for this grade.')
   }
 
   return prisma.teacherAssignment.create({ data })

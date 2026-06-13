@@ -45,6 +45,7 @@ export default function AttendancePage() {
   // Sessions state
   const [recordedSessions, setRecordedSessions] = useState<number[]>([])
   const [nextSession, setNextSession] = useState(1)
+  const [effectiveCap, setEffectiveCap] = useState(0)
   const [selectedSession, setSelectedSession] = useState<number | null>(null)  // null = none, NEW_SESSION = new
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [monthlyProgress, setMonthlyProgress] = useState<ProgressData | null>(null)
@@ -59,6 +60,7 @@ export default function AttendancePage() {
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [remarks, setRemarks] = useState('')
+  const [grantingOverride, setGrantingOverride] = useState(false)
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -67,7 +69,7 @@ export default function AttendancePage() {
   )
   const sessionTarget = selectedAssignment?.subject.monthlySessionTarget ?? 0
   const sessionsThisMonth = monthlyProgress?.sessionsConducted ?? 0
-  const atCap = isTeacher && sessionsThisMonth >= sessionTarget && sessionTarget > 0
+  const atCap = isTeacher && effectiveCap > 0 && sessionsThisMonth >= effectiveCap
 
   // ── Loaders ────────────────────────────────────────────────────────────────
 
@@ -134,12 +136,13 @@ export default function AttendancePage() {
     setSaved(false)
 
     const params = new URLSearchParams({ action: 'nextsession', subjectId, gradeId, date })
-    const { data } = await authFetch<{ nextSession: number; todaySessions: number[] }>(
+    const { data } = await authFetch<{ nextSession: number; todaySessions: number[]; effectiveCap: number }>(
       `/api/attendance?${params}`
     )
     if (data) {
       setRecordedSessions(data.todaySessions)
       setNextSession(data.nextSession)
+      setEffectiveCap(data.effectiveCap ?? 0)
       if (data.todaySessions.length === 1) setSelectedSession(data.todaySessions[0])
     }
     setSessionsLoading(false)
@@ -275,7 +278,7 @@ export default function AttendancePage() {
             type="date"
             value={form.date}
             min={isTeacher ? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0] : undefined}
-            max={isTeacher ? new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().split('T')[0] : undefined}
+            max={new Date().toISOString().split('T')[0]}
             onChange={(e) => setForm({ ...form, date: e.target.value })}
           />
 
@@ -286,12 +289,47 @@ export default function AttendancePage() {
               atCap ? 'bg-red-50 border border-red-200' : 'bg-gray-50'
             )}>
               <span className={atCap ? 'text-red-700 font-medium' : 'text-gray-600'}>
-                Monthly sessions: {sessionsThisMonth} / {sessionTarget}
+                Monthly sessions: {sessionsThisMonth} / {effectiveCap || sessionTarget}
+                {effectiveCap > sessionTarget && ` (+${effectiveCap - sessionTarget} extra)`}
                 {atCap && ' — session limit reached'}
               </span>
               <Badge variant={atCap ? 'danger' : monthlyProgress.progress === 'completed' ? 'success' : 'warning'}>
                 {atCap ? 'Capped' : monthlyProgress.progress}
               </Badge>
+            </div>
+          )}
+
+          {/* Admin/SuperAdmin: session cap info + Add Extra Session */}
+          {!isTeacher && form.gradeId && form.subjectId && form.date && (
+            <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 text-sm">
+              <span className="text-gray-600">
+                Session cap: {sessionTarget || effectiveCap}
+                {effectiveCap > sessionTarget && (
+                  <span className="ml-1.5 text-indigo-600 font-medium">+{effectiveCap - sessionTarget} extra granted</span>
+                )}
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={grantingOverride}
+                onClick={async () => {
+                  setGrantingOverride(true)
+                  const d = new Date(form.date)
+                  await authFetch('/api/attendance/override', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      subjectId: form.subjectId,
+                      gradeId: form.gradeId,
+                      month: d.getMonth() + 1,
+                      year: d.getFullYear(),
+                    }),
+                  })
+                  await loadRecordedSessions(form.subjectId, form.gradeId, form.date)
+                  setGrantingOverride(false)
+                }}
+              >
+                + Add Extra Session
+              </Button>
             </div>
           )}
 
@@ -324,7 +362,7 @@ export default function AttendancePage() {
                   {isTeacher && (
                     atCap ? (
                       <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-50 text-red-500 border border-red-200 cursor-not-allowed">
-                        Session limit reached ({sessionTarget}/{sessionTarget})
+                        Session limit reached ({sessionsThisMonth}/{effectiveCap || sessionTarget})
                       </div>
                     ) : (
                       <button

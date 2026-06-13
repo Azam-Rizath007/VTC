@@ -55,6 +55,30 @@ export async function getStudentsForAttendance(gradeId: string, subjectId: strin
   })
 }
 
+export async function getEffectiveCap(subjectId: string, gradeId: string, month: number, year: number): Promise<number> {
+  const subject = await prisma.subject.findUnique({ where: { id: subjectId } })
+  const base = subject?.monthlySessionTarget ?? 0
+  const override = await prisma.sessionOverride.findUnique({
+    where: { subjectId_gradeId_month_year: { subjectId, gradeId, month, year } },
+  })
+  return base + (override?.extraSessions ?? 0)
+}
+
+export async function grantExtraSession(
+  subjectId: string,
+  gradeId: string,
+  month: number,
+  year: number,
+  adminUserId: string
+) {
+  return prisma.sessionOverride.upsert({
+    where: { subjectId_gradeId_month_year: { subjectId, gradeId, month, year } },
+    update: { extraSessions: { increment: 1 }, grantedBy: adminUserId },
+    create: { subjectId, gradeId, month, year, extraSessions: 1, grantedBy: adminUserId },
+  })
+}
+
+
 /**
  * Returns sessions recorded on a specific date AND the next session number
  * based on the month-wide count (not just today), so teachers always get
@@ -65,7 +89,7 @@ export async function getNextSessionNumber(
   gradeId: string,
   teacherId: string,
   date: Date
-): Promise<{ nextSession: number; todaySessions: number[] }> {
+): Promise<{ nextSession: number; todaySessions: number[]; effectiveCap: number }> {
   const dayStart = new Date(date)
   dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(date)
@@ -83,16 +107,15 @@ export async function getNextSessionNumber(
   })
   const todaySessions = todayRecords.map((r) => r.sessionNumber)
 
-  // Next session = month-wide TeacherSession count + 1
-  // This gives the correct sequential number regardless of which day the teacher opens the app
   const month = date.getMonth() + 1
   const year = date.getFullYear()
   const monthSessionCount = await prisma.teacherSession.count({
     where: { teacherId, subjectId, month, year },
   })
   const nextSession = monthSessionCount + 1
+  const effectiveCap = await getEffectiveCap(subjectId, gradeId, month, year)
 
-  return { nextSession, todaySessions }
+  return { nextSession, todaySessions, effectiveCap }
 }
 export async function getAttendanceForSession(
   subjectId: string,
@@ -142,14 +165,15 @@ export async function saveAttendance(records: AttendanceInput[], isTeacher = tru
     if (!isExistingSession) {
       const subject = await prisma.subject.findUnique({ where: { id: first.subjectId } })
       const target = subject?.monthlySessionTarget ?? 0
-      if (target > 0) {
+      if (target > 0 && subject) {
         const month = first.date.getMonth() + 1
         const year = first.date.getFullYear()
+        const effectiveCap = await getEffectiveCap(first.subjectId, subject.gradeId, month, year)
         const completed = await prisma.teacherSession.count({
           where: { teacherId: first.teacherId, subjectId: first.subjectId, month, year },
         })
-        if (completed >= target) {
-          throw new Error(`Session limit reached. This subject allows ${target} sessions per month and ${completed} have already been recorded.`)
+        if (completed >= effectiveCap) {
+          throw new Error(`Session limit reached. This subject allows ${effectiveCap} sessions per month and ${completed} have already been recorded.`)
         }
       }
     }

@@ -1,6 +1,6 @@
 'use client'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, CreditCard, Receipt, Search, X } from 'lucide-react'
+import { Plus, CreditCard, Search, X } from 'lucide-react'
 import { StatWidget } from '@/components/ui/StatWidget'
 import { SearchBar } from '@/components/ui/SearchBar'
 import { Select } from '@/components/ui/Select'
@@ -21,8 +21,8 @@ interface FeeStats {
   weeklyCollection: number
   monthlyCollection: number
   pendingFeeCount: number
-  recentPayments: { id: string; studentName: string; subject: string; amount: number; paidAt: string }[]
-  overdueStudents: { studentName: string; grade: string; subject: string; balance: number }[]
+  recentPayments: { studentName: string; grade: string; month: number; year: number; amount: number; paidAt: string }[]
+  overdueStudents: { studentName: string; grade: string; month: number; year: number; balance: number }[]
 }
 
 interface Student {
@@ -31,34 +31,27 @@ interface Student {
   grade: { name: string }
 }
 
-interface SubjectFee {
-  subjectId: string
-  subjectName: string
-  fee: number
-  balance: number
-  amountPaid: number
-  discount: number
-}
-
 interface FeePreview {
   totalFee: number
   totalPreviouslyPaid: number
   totalDiscount: number
   previousDue: number
-  subjects: SubjectFee[]
+  carryover: number
+  totalDue: number
   student: Student & { grade: { name: string } }
 }
 
 interface Payment {
-  id: string
+  key: string
+  studentId: string
+  studentName: string
+  grade: string
   month: number
   year: number
   amountPaid: number
   balance: number
   status: string
-  paidAt?: string
-  student: { name: string; grade: { name: string } }
-  subject: { name: string }
+  paidAt?: string | null
 }
 
 const MONTHS = [
@@ -87,15 +80,18 @@ export default function FeesPage() {
   const [students, setStudents] = useState<Student[]>([])
   const [loading, setLoading] = useState(true)
   const [showPayment, setShowPayment] = useState(false)
-  const [showReceipt, setShowReceipt] = useState<Payment | null>(null)
   const [listSearch, setListSearch] = useState('')
+  const [filterMonth, setFilterMonth] = useState('')
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear().toString())
+  const [filterGradeId, setFilterGradeId] = useState('')
+  const [grades, setGrades] = useState<{ id: string; name: string }[]>([])
 
   // Payment modal state
   const [studentSearch, setStudentSearch] = useState('')
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null)
   const [preview, setPreview] = useState<FeePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [month, setMonth] = useState(String(new Date().getMonth() + 1))
   const [year, setYear] = useState(now.getFullYear())
 
   // Payment form
@@ -156,16 +152,24 @@ export default function FeesPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [statsRes, paymentsRes, studentsRes] = await Promise.all([
+    const params = new URLSearchParams()
+    if (listSearch) params.set('search', listSearch)
+    if (filterMonth) params.set('month', filterMonth)
+    if (filterYear) params.set('year', filterYear)
+    if (filterGradeId) params.set('gradeId', filterGradeId)
+
+    const [statsRes, paymentsRes, studentsRes, gradesRes] = await Promise.all([
       authFetch<FeeStats>('/api/fees/stats'),
-      authFetch<{ payments: Payment[] }>(`/api/fees?search=${encodeURIComponent(listSearch)}`),
+      authFetch<{ payments: Payment[] }>(`/api/fees?${params.toString()}`),
       authFetch<{ students: Student[] }>('/api/students?status=ACTIVE'),
+      authFetch<{ grades: { id: string; name: string }[] }>('/api/grades'),
     ])
     if (statsRes.data) setStats(statsRes.data)
     if (paymentsRes.data?.payments) setPayments(paymentsRes.data.payments)
     if (studentsRes.data?.students) setStudents(studentsRes.data.students)
+    if (gradesRes.data?.grades) setGrades(gradesRes.data.grades)
     setLoading(false)
-  }, [listSearch])
+  }, [listSearch, filterMonth, filterYear, filterGradeId])
 
   useEffect(() => {
     const timer = setTimeout(load, 300)
@@ -226,7 +230,6 @@ export default function FeesPage() {
   const handleRecordPayment = async () => {
     setError('')
     if (!selectedStudent) { setError('Select a student'); return }
-    if (!preview || preview.subjects.length === 0) { setError('No enrolled subjects found'); return }
     if (!isFullPayment && paidAmount <= 0) { setError('Enter an amount to pay'); return }
     if (paidAmount > payableAmount) { setError('Amount exceeds total payable'); return }
 
@@ -282,11 +285,11 @@ export default function FeesPage() {
             {!stats?.recentPayments.length ? (
               <p className="text-sm text-gray-400">No recent payments.</p>
             ) : (
-              stats.recentPayments.map((p) => (
-                <div key={p.id} className="flex justify-between text-sm">
+              stats.recentPayments.map((p, i) => (
+                <div key={i} className="flex justify-between text-sm">
                   <div>
                     <p className="font-medium">{p.studentName}</p>
-                    <p className="text-xs text-gray-400">{p.subject}</p>
+                    <p className="text-xs text-gray-400">{p.grade} · {formatDate(p.paidAt)}</p>
                   </div>
                   <span className="font-semibold text-green-600">{formatCurrency(p.amount)}</span>
                 </div>
@@ -305,7 +308,7 @@ export default function FeesPage() {
                 <div key={i} className="flex justify-between text-sm">
                   <div>
                     <p className="font-medium">{s.studentName}</p>
-                    <p className="text-xs text-gray-400">{s.grade} · {s.subject}</p>
+                    <p className="text-xs text-gray-400">{MONTHS[s.month - 1]?.label} {s.year} · {s.grade}</p>
                   </div>
                   <span className="font-semibold text-red-500">{formatCurrency(s.balance)}</span>
                 </div>
@@ -315,21 +318,43 @@ export default function FeesPage() {
         </Card>
       </div>
 
-      {/* Payment list */}
-      <SearchBar placeholder="Search payments by student..." onChange={setListSearch} />
+      {/* Payment list filters */}
+      <div className="space-y-2">
+        <SearchBar placeholder="Search by student name..." onChange={setListSearch} />
+        <div className="grid grid-cols-3 gap-2">
+          <Select
+            placeholder="Month"
+            options={MONTHS}
+            value={month}
+            onChange={(e) => setFilterMonth(e.target.value)}
+          />
+          <input
+            type="number"
+            placeholder="Year"
+            value={filterYear}
+            onChange={(e) => setFilterYear(e.target.value)}
+            className="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+          />
+          <Select
+            placeholder="Grade"
+            options={grades.map((g) => ({ value: g.id, label: g.name }))}
+            value={filterGradeId}
+            onChange={(e) => setFilterGradeId(e.target.value)}
+          />
+        </div>
+      </div>
       <div className="space-y-3">
         {payments.map((payment) => (
           <MobileListCard
-            key={payment.id}
-            title={payment.student.name}
-            subtitle={`${payment.subject.name} · ${payment.student.grade.name}`}
+            key={payment.key}
+            title={payment.studentName}
+            subtitle={`${MONTHS[payment.month - 1]?.label} ${payment.year} · ${payment.grade}`}
             meta={payment.paidAt ? formatDate(payment.paidAt) : undefined}
             badge={
               <Badge variant={payment.status === 'PAID' ? 'success' : payment.status === 'PARTIAL' ? 'warning' : 'danger'}>
                 {formatCurrency(payment.amountPaid)}
               </Badge>
             }
-            onClick={() => setShowReceipt(payment)}
           />
         ))}
       </div>
@@ -408,22 +433,6 @@ export default function FeesPage() {
           {/* Fee breakdown — shown once student + preview is loaded */}
           {preview && !previewLoading && (
             <>
-              {/* Subject pills */}
-              <div>
-                <p className="text-xs font-medium text-gray-500 mb-1.5">Enrolled Subjects</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {preview.subjects.map((s) => (
-                    <span
-                      key={s.subjectId}
-                      className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-xs rounded-full px-2.5 py-1"
-                    >
-                      {s.subjectName}
-                      <span className="text-gray-400">· {formatCurrency(s.fee)}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-
               {/* Previous due notice */}
               {preview.previousDue > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-800">
@@ -543,51 +552,6 @@ export default function FeesPage() {
         </div>
       </Modal>
 
-      {/* ─── Receipt Modal ────────────────────────────────────────────────── */}
-      <Modal open={!!showReceipt} onClose={() => setShowReceipt(null)} title="Payment Receipt">
-        {showReceipt && (
-          <div className="space-y-4 text-sm">
-            <div className="text-center py-4 border-b border-gray-100">
-              <Receipt className="w-8 h-8 text-indigo-600 mx-auto mb-2" />
-              <p className="font-bold text-gray-900">Fee Receipt</p>
-            </div>
-            <dl className="space-y-2">
-              <div className="flex justify-between">
-                <dt className="text-gray-400">Student</dt>
-                <dd className="font-medium">{showReceipt.student.name}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-gray-400">Grade</dt>
-                <dd>{showReceipt.student.grade.name}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-gray-400">Subject</dt>
-                <dd>{showReceipt.subject.name}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-gray-400">Period</dt>
-                <dd>{MONTHS[showReceipt.month - 1]?.label} {showReceipt.year}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-gray-400">Amount Paid</dt>
-                <dd className="font-bold text-green-600">{formatCurrency(showReceipt.amountPaid)}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-gray-400">Balance Due</dt>
-                <dd className={showReceipt.balance > 0 ? 'text-red-500 font-semibold' : 'text-gray-400'}>
-                  {formatCurrency(showReceipt.balance)}
-                </dd>
-              </div>
-              {showReceipt.paidAt && (
-                <div className="flex justify-between">
-                  <dt className="text-gray-400">Date</dt>
-                  <dd>{formatDate(showReceipt.paidAt)}</dd>
-                </div>
-              )}
-            </dl>
-          </div>
-        )}
-      </Modal>
     </div>
   )
 }

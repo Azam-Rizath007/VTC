@@ -48,6 +48,7 @@ model User {
   sessions      TeacherSession[]
   attendances   Attendance[]
   salaries      TeacherSalary[]
+  sessionOverrides SessionOverride[]
 }
 
 model Institute {
@@ -71,6 +72,7 @@ model Grade {
   assignments TeacherAssignment[]
   sessions    TeacherSession[]
   salaries    TeacherSalary[]
+  sessionOverrides SessionOverride[]
 }
 
 model Subject {
@@ -88,6 +90,7 @@ model Subject {
   sessions        TeacherSession[]
   payments        FeePayment[]
   salaries        TeacherSalary[]
+  sessionOverrides SessionOverride[]
 
   @@unique([name, gradeId])
 }
@@ -210,4 +213,21 @@ model TeacherSalary {
 model SystemConfig {
   key   String @id
   value String
+}
+
+model SessionOverride {
+  id             String   @id @default(cuid())
+  subjectId      String
+  gradeId        String
+  month          Int
+  year           Int
+  extraSessions  Int      @default(1)
+  grantedBy      String
+  grantedAt      DateTime @updatedAt
+
+  subject   Subject @relation(fields: [subjectId], references: [id])
+  grade     Grade   @relation(fields: [gradeId], references: [id])
+  grantedByUser User @relation(fields: [grantedBy], references: [id])
+
+  @@unique([subjectId, gradeId, month, year])
 }

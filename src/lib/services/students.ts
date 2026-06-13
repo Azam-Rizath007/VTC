@@ -96,12 +96,33 @@ export async function getStudentById(id: string) {
     }
   })
 
+  // Aggregate payments by month+year
+  const paymentsByMonth = student.payments.reduce<
+    Record<string, { month: number; year: number; amountPaid: number; balance: number; status: string; paidAt?: string | null }>
+  >((acc, p) => {
+    const key = `${p.year}-${p.month}`
+    if (!acc[key]) {
+      acc[key] = { month: p.month, year: p.year, amountPaid: 0, balance: 0, status: 'PENDING', paidAt: p.paidAt?.toISOString() ?? null }
+    }
+    acc[key].amountPaid += p.amountPaid
+    acc[key].balance += p.balance
+    if (p.paidAt) acc[key].paidAt = p.paidAt.toISOString()
+    return acc
+  }, {})
+
+  const paymentHistory = Object.values(paymentsByMonth)
+    .map((p) => ({
+      ...p,
+      status: p.balance === 0 && p.amountPaid > 0 ? 'PAID' : p.amountPaid > 0 ? 'PARTIAL' : 'PENDING',
+    }))
+    .sort((a, b) => b.year !== a.year ? b.year - a.year : b.month - a.month)
+
   return {
     ...student,
     attendanceSummary: Object.values(attendanceSummary),
     feeStatus,
     pendingBalance,
-    paymentHistory: student.payments,
+    paymentHistory,
   }
 }
 

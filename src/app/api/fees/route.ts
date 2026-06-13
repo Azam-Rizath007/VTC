@@ -23,7 +23,6 @@ export async function GET(req: NextRequest) {
     month: searchParams.get('month') ? Number(searchParams.get('month')) : undefined,
     year: searchParams.get('year') ? Number(searchParams.get('year')) : undefined,
     gradeId: searchParams.get('gradeId') || undefined,
-    subjectId: searchParams.get('subjectId') || undefined,
   })
 
   return NextResponse.json({ payments })
