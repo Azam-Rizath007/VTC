@@ -126,7 +126,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Cannot record attendance for a future date.' }, { status: 400 })
     }
 
-    const sessionDateTime = new Date(year, month - 1, day, now.getHours(), now.getMinutes(), now.getSeconds())
+    // Build the session datetime: use the client's calendar date (IST) at the current
+    // wall-clock time, but expressed correctly so the stored UTC value falls on the
+    // same IST calendar day.  We store noon IST (06:30 UTC) of the chosen date so
+    // timezone boundaries never cause the record to drift to a neighbouring day.
+    const sessionDateTime = new Date(Date.UTC(year, month - 1, day, 6, 30, 0))
 
     // For admin saves, look up the assigned teacher for this subject+grade.
     // Admin's userId must not be stored as teacherId — it would corrupt session/salary tracking.

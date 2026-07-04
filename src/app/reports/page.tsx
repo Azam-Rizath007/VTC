@@ -9,6 +9,7 @@ import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
 import { LoadingState } from '@/components/ui/LoadingState'
 import { authFetch } from '@/lib/client-api'
 import { formatCurrency, formatDateTime } from '@/lib/utils'
+import { useAuthStore } from '@/store/auth'
 
 const MONTHS = [
   'January','February','March','April','May','June',
@@ -36,6 +37,7 @@ interface Session {
 }
 
 export default function ReportsPage() {
+  const { user } = useAuthStore()
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
@@ -113,9 +115,12 @@ export default function ReportsPage() {
             salaries.map((s) => (
               <div key={s.id} className="rounded-xl border border-gray-100 overflow-hidden">
                 {/* Row */}
-                <button
-                  className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors text-left"
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors text-left cursor-pointer"
                   onClick={() => toggleExpand(s)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(s) } }}
                 >
                   <div className="flex items-center gap-2">
                     {expanded === s.id
@@ -124,8 +129,11 @@ export default function ReportsPage() {
                     }
                     <div>
                       <p className="text-sm font-medium text-gray-900">{s.teacher.name}</p>
-                      <p className="text-xs text-gray-400">
+                      <p className="text-xs text-gray-400 flex flex-wrap items-center gap-1">
                         {s.subject.name} · {s.grade.name} · {s.completedSessions}/{s.requiredSessions} sessions
+                        {s.completedSessions < s.requiredSessions && (
+                          <Badge variant="warning">Not completed</Badge>
+                        )}
                       </p>
                       <p className="text-xs text-gray-400">Rate: {formatCurrency(s.rate)}/session</p>
                     </div>
@@ -134,9 +142,10 @@ export default function ReportsPage() {
                     <p className="font-semibold text-indigo-700">{formatCurrency(s.totalPayable)}</p>
                     {s.status === 'PAID' ? (
                       <Badge variant="success">Paid</Badge>
-                    ) : s.completedSessions >= s.requiredSessions ? (
+                    ) : user?.role === 'SUPER_ADMIN' || s.completedSessions >= s.requiredSessions ? (
                       <Button
                         size="sm"
+                        className="px-2 py-1 text-xs rounded-md"
                         loading={saving === s.id}
                         onClick={(e) => { e.stopPropagation(); markPaid(s.id) }}
                       >
@@ -146,7 +155,7 @@ export default function ReportsPage() {
                       <Badge variant="warning">Pending</Badge>
                     )}
                   </div>
-                </button>
+                </div>
 
                 {/* Expanded sessions */}
                 {expanded === s.id && (

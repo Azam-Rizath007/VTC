@@ -15,6 +15,7 @@ import { authFetch } from '@/lib/client-api'
 
 interface Student {
   id: string
+  studentId: string
   name: string
   status: 'ACTIVE' | 'INACTIVE'
   parentName?: string | null
@@ -71,7 +72,7 @@ export default function StudentsPage() {
     } catch (err) {
       console.error('Failed to load students:', err)
       setStudents([])
-    } finally {useEffect
+    } finally {
       setLoading(false)
     }
   }, [search, gradeId, subjectId, status])
@@ -111,7 +112,7 @@ export default function StudentsPage() {
         </Button>
       </div>
 
-      <SearchBar placeholder="Search by name or parent..." onChange={setSearch} />
+      <SearchBar placeholder="Search by ID, name, or parent..." onChange={setSearch} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Select
@@ -187,7 +188,7 @@ export default function StudentsPage() {
               key={student.id}
               title={student.name}
               subtitle={`${student.grade.name} · ${student.subjects.map((s) => s.subject.name).join(', ')}`}
-              meta={student.parentContact || undefined}
+              meta={student.parentContact ? `${student.studentId} - ${student.parentContact}` : student.studentId}
               left={<Avatar name={student.name} />}
               badge={
                 <div className="flex items-center gap-2">

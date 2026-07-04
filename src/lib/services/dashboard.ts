@@ -1,63 +1,219 @@
 import { prisma } from '@/lib/prisma'
 import { PaymentStatus, Role, StudentStatus } from '@/generated/prisma'
+import { isBillableFeeMonth, isDetailedFeeEnabled, isFeeMonthBeforeStudentJoined } from '@/lib/services/fees'
 import bcrypt from 'bcryptjs'
 
 export async function getDashboardStats(role: Role, userId?: string) {
   const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+  // Sessions are stored with UTC-based dates (Date.UTC of the client's chosen date).
+  // Use the UTC calendar date for "today" so the query matches what's in the DB.
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0))
+  const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999))
+
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
   const yearStart = new Date(now.getFullYear(), 0, 1)
   const yearEnd = new Date(now.getFullYear() + 1, 0, 1)
-
-  const [totalStudents, activeStudents, todayPayments, monthlyPayments, pendingPayments, todaySessions] =
-    await Promise.all([
-      prisma.student.count(),
-      prisma.student.count({ where: { status: StudentStatus.ACTIVE } }),
-      prisma.feePayment.findMany({ where: { paidAt: { gte: todayStart } } }),
-      prisma.feePayment.findMany({ where: { paidAt: { gte: monthStart } } }),
-       // YEARLY REVENUE
-      // prisma.feePayment.findMany({
-      //   where: {
-      //     paidAt: {
-      //       gte: yearStart,
-      //       lt: yearEnd,
-      //     },
-      //   },
-      // }),
-      prisma.feePayment.findMany({
-        where: { status: { not: PaymentStatus.PAID } },
-        include: { student: { include: { grade: true } }, subject: true },
-      }),
-      prisma.teacherSession.count({ where: { date: { gte: todayStart } } }),
-    ])
-
-  const todayCollection = todayPayments.reduce((s, p) => s + p.amountPaid, 0)
-  const monthlyRevenue = monthlyPayments.reduce((s, p) => s + p.amountPaid, 0)
-  // const yearlyRevenue = yearlyPayments.reduce((s, p) => s + p.amountPaid, 0)
-    const yearlyRevenueAgg = await prisma.feePayment.aggregate({
-    _sum: { amountPaid: true },
-    where: {
-      paidAt: {
-        gte: yearStart,
-        lt: yearEnd,
-      },
-    },
-  })
-
-  const yearlyRevenue = yearlyRevenueAgg._sum.amountPaid ?? 0
-
-  const pendingStudentIds = new Set(pendingPayments.map((p) => p.studentId))
-
-  // Recent payments: aggregate by student+month+year, same as /fees
   const weekStart = new Date(todayStart)
   weekStart.setDate(weekStart.getDate() - 7)
-  const recentRaw = await prisma.feePayment.findMany({
-    where: { paidAt: { gte: weekStart } },
-    include: { student: { include: { grade: true } } },
-    orderBy: { paidAt: 'desc' },
-  })
+  const detailFeeEnabled = isDetailedFeeEnabled()
+
+  async function loadTeacherData() {
+    if (role !== Role.TEACHER || !userId) return null
+
+    const assignments = await prisma.teacherAssignment.findMany({
+      where: { userId },
+      include: { subject: true, grade: true },
+    })
+
+    const month = now.getMonth() + 1
+    const year = now.getFullYear()
+    const sessionsConducted = await prisma.teacherSession.count({
+      where: { teacherId: userId, month, year },
+    })
+
+    return {
+      assignments: assignments.map((a) => ({
+        grade: a.grade.name,
+        subject: a.subject.name,
+      })),
+      sessionsConducted,
+      pendingMarking: 0,
+    }
+  }
+
+  const [
+    totalStudents,
+    activeStudents,
+    todaySessions,
+    salaryAlerts,
+    todayAttendance,
+    teacherData,
+  ] = await Promise.all([
+    prisma.student.count(),
+    prisma.student.count({ where: { status: StudentStatus.ACTIVE } }),
+    prisma.teacherSession.count({ where: { date: { gte: todayStart, lte: todayEnd } } }),
+    prisma.teacherSalary.findMany({
+      where: {
+        month: now.getMonth() + 1,
+        year: now.getFullYear(),
+        completedSessions: { gte: 10 },
+        status: 'PENDING',
+      },
+      include: { teacher: true, subject: true },
+      take: 5,
+    }),
+    prisma.attendance.findMany({ where: { date: { gte: todayStart, lte: todayEnd } } }),
+    loadTeacherData(),
+  ])
+
+  const absentToday = todayAttendance.filter((a) => a.status === 'ABSENT').length
+  const mappedSalaryAlerts = salaryAlerts.map((s) => ({
+    teacher: s.teacher.name,
+    subject: s.subject.name,
+    sessions: s.completedSessions,
+    payable: s.totalPayable,
+  }))
+
+  if (!detailFeeEnabled) {
+    const [
+      todayPayments,
+      monthlyPayments,
+      yearlyPayments,
+      pendingPayments,
+      recentRaw,
+    ] = await Promise.all([
+      prisma.studentMonthlyFee.findMany({
+        where: { paidAt: { gte: todayStart } },
+        include: { student: { include: { grade: true } } },
+      }),
+      prisma.studentMonthlyFee.findMany({
+        where: { paidAt: { gte: monthStart } },
+        include: { student: { include: { grade: true } } },
+      }),
+      prisma.studentMonthlyFee.findMany({
+        where: {
+          paidAt: {
+            gte: yearStart,
+            lt: yearEnd,
+          },
+        },
+        include: { student: { include: { grade: true } } },
+      }),
+      prisma.studentMonthlyFee.findMany({
+        where: { status: { not: PaymentStatus.PAID }, balance: { gt: 0 } },
+        include: { student: { include: { grade: true } } },
+        orderBy: [{ year: 'asc' }, { month: 'asc' }],
+      }),
+      prisma.studentMonthlyFee.findMany({
+        where: { paidAt: { gte: weekStart } },
+        include: { student: { include: { grade: true } } },
+        orderBy: { paidAt: 'desc' },
+        take: 10,
+      }),
+    ])
+    const todayCollection = todayPayments
+      .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+      .reduce((sum, p) => sum + p.paidAmount, 0)
+    const monthlyRevenue = monthlyPayments
+      .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+      .reduce((sum, p) => sum + p.paidAmount, 0)
+    const yearlyRevenue = yearlyPayments
+      .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+      .reduce((sum, p) => sum + p.paidAmount, 0)
+
+    const pendingMap = new Map<string, { studentName: string; grade: string; month: number; year: number; balance: number }>()
+    for (const p of pendingPayments) {
+      if (!isBillableFeeMonth(p.student.createdAt, p.month, p.year, now)) continue
+      const existing = pendingMap.get(p.studentId)
+      if (existing) {
+        existing.balance += p.balance
+      } else {
+        pendingMap.set(p.studentId, {
+          studentName: p.student.name,
+          grade: p.student.grade.name,
+          month: p.month,
+          year: p.year,
+          balance: p.balance,
+        })
+      }
+    }
+    const pendingStudents = [...pendingMap.values()].slice(0, 10)
+
+    return {
+      totalStudents,
+      activeStudents,
+      todayCollection,
+      monthlyRevenue,
+      yearlyRevenue,
+      pendingFees: pendingMap.size,
+      todayClasses: todaySessions,
+      teacherSessionsCompleted: todaySessions,
+      absentToday,
+      recentPayments: recentRaw
+        .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+        .map((p) => ({
+          studentName: p.student.name,
+          grade: p.student.grade.name,
+          month: p.month,
+          year: p.year,
+          amount: p.paidAmount,
+          paidAt: p.paidAt!.toISOString(),
+        })),
+      pendingStudents,
+      salaryAlerts: mappedSalaryAlerts,
+      teacher: teacherData,
+    }
+  }
+
+  const [
+    todayPayments,
+    monthlyPayments,
+    yearlyPayments,
+    pendingPayments,
+    recentRaw,
+  ] = await Promise.all([
+    prisma.feePayment.findMany({
+      where: { paidAt: { gte: todayStart } },
+      include: { student: { include: { grade: true } } },
+    }),
+    prisma.feePayment.findMany({
+      where: { paidAt: { gte: monthStart } },
+      include: { student: { include: { grade: true } } },
+    }),
+    prisma.feePayment.findMany({
+      where: {
+        paidAt: {
+          gte: yearStart,
+          lt: yearEnd,
+        },
+      },
+      include: { student: { include: { grade: true } } },
+    }),
+    prisma.feePayment.findMany({
+      where: { status: { not: PaymentStatus.PAID }, balance: { gt: 0 } },
+      include: { student: { include: { grade: true } }, subject: true },
+      orderBy: [{ year: 'asc' }, { month: 'asc' }],
+    }),
+    prisma.feePayment.findMany({
+      where: { paidAt: { gte: weekStart } },
+      include: { student: { include: { grade: true } } },
+      orderBy: { paidAt: 'desc' },
+    }),
+  ])
+  const todayCollection = todayPayments
+    .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+    .reduce((sum, p) => sum + p.amountPaid, 0)
+  const monthlyRevenue = monthlyPayments
+    .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+    .reduce((sum, p) => sum + p.amountPaid, 0)
+  const yearlyRevenue = yearlyPayments
+    .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+    .reduce((sum, p) => sum + p.amountPaid, 0)
+
   const recentMap = new Map<string, { studentName: string; grade: string; month: number; year: number; amount: number; paidAt: Date }>()
   for (const p of recentRaw) {
+    if (isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)) continue
     const key = `${p.studentId}-${p.month}-${p.year}`
     if (!recentMap.has(key)) {
       recentMap.set(key, { studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, amount: 0, paidAt: p.paidAt! })
@@ -70,55 +226,23 @@ export async function getDashboardStats(role: Role, userId?: string) {
     .slice(0, 10)
     .map((p) => ({ ...p, paidAt: p.paidAt.toISOString() }))
 
-  // Pending fees: aggregate by student+month+year, same as /fees
   const overdueMap = new Map<string, { studentName: string; grade: string; month: number; year: number; balance: number }>()
   for (const p of pendingPayments) {
-    const key = `${p.studentId}-${p.month}-${p.year}`
-    if (!overdueMap.has(key)) {
-      overdueMap.set(key, { studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, balance: 0 })
+    if (!isBillableFeeMonth(p.student.createdAt, p.month, p.year, now)) continue
+    const existing = overdueMap.get(p.studentId)
+    if (existing) {
+      existing.balance += p.balance
+    } else {
+      overdueMap.set(p.studentId, {
+        studentName: p.student.name,
+        grade: p.student.grade.name,
+        month: p.month,
+        year: p.year,
+        balance: p.balance,
+      })
     }
-    overdueMap.get(key)!.balance += p.balance
   }
   const pendingStudents = [...overdueMap.values()].slice(0, 10)
-
-  const salaryAlerts = await prisma.teacherSalary.findMany({
-    where: {
-      month: now.getMonth() + 1,
-      year: now.getFullYear(),
-      completedSessions: { gte: 10 },
-      status: 'PENDING',
-    },
-    include: { teacher: true, subject: true },
-    take: 5,
-  })
-
-  let teacherData = null
-  if (role === Role.TEACHER && userId) {
-    const assignments = await prisma.teacherAssignment.findMany({
-      where: { userId },
-      include: { subject: true, grade: true },
-    })
-
-    const month = now.getMonth() + 1
-    const year = now.getFullYear()
-    const sessionsConducted = await prisma.teacherSession.count({
-      where: { teacherId: userId, month, year },
-    })
-
-    teacherData = {
-      assignments: assignments.map((a) => ({
-        grade: a.grade.name,
-        subject: a.subject.name,
-      })),
-      sessionsConducted,
-      pendingMarking: 0,
-    }
-  }
-
-  const todayAttendance = await prisma.attendance.findMany({
-    where: { date: { gte: todayStart } },
-  })
-  const absentToday = todayAttendance.filter((a) => a.status === 'ABSENT').length
 
   return {
     totalStudents,
@@ -126,18 +250,13 @@ export async function getDashboardStats(role: Role, userId?: string) {
     todayCollection,
     monthlyRevenue,
     yearlyRevenue,
-    pendingFees: pendingStudentIds.size,
+    pendingFees: overdueMap.size,
     todayClasses: todaySessions,
     teacherSessionsCompleted: todaySessions,
     absentToday,
     recentPayments,
     pendingStudents,
-    salaryAlerts: salaryAlerts.map((s) => ({
-      teacher: s.teacher.name,
-      subject: s.subject.name,
-      sessions: s.completedSessions,
-      payable: s.totalPayable,
-    })),
+    salaryAlerts: mappedSalaryAlerts,
     teacher: teacherData,
   }
 }

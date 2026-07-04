@@ -2,7 +2,6 @@
 import { useEffect, useState } from 'react'
 import { StatWidget } from '@/components/ui/StatWidget'
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
 import { LoadingState } from '@/components/ui/LoadingState'
 import { useAuthStore } from '@/store/auth'
 import { authFetch } from '@/lib/client-api'
@@ -32,10 +31,26 @@ interface DashboardStats {
   salaryAlerts: { teacher: string; subject: string; sessions: number; payable: number }[]
 }
 
+const MONTHS = [
+  { value: '1', label: 'January' },
+  { value: '2', label: 'February' },
+  { value: '3', label: 'March' },
+  { value: '4', label: 'April' },
+  { value: '5', label: 'May' },
+  { value: '6', label: 'June' },
+  { value: '7', label: 'July' },
+  { value: '8', label: 'August' },
+  { value: '9', label: 'September' },
+  { value: '10', label: 'October' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'December' },
+]
+
 export function AdminDashboard() {
   const { user } = useAuthStore()
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const isAdmin = user?.role === 'ADMIN'
 
   useEffect(() => {
     const loadStats = async () => {
@@ -62,14 +77,18 @@ export function AdminDashboard() {
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {/* <StatWidget label="Total Students" value={stats.totalStudents} icon={GraduationCap} color="maroon" /> */}
-        <StatWidget label="Yearly Revenue" value={formatCurrency(stats.yearlyRevenue)} icon={TrendingUp} color="green" />
+        {!isAdmin && (
+          <StatWidget label="Yearly Revenue" value={formatCurrency(stats.yearlyRevenue)} icon={TrendingUp} color="green" />
+        )}
         <StatWidget label="Active Students" value={stats.activeStudents} icon={Users} color="blue" />
         <StatWidget label="Today's Collection" value={formatCurrency(stats.todayCollection)} icon={CreditCard} color="green" />
-        <StatWidget label="Pending Fees" value={stats.pendingFees} icon={AlertCircle} color="orange" />
+        <StatWidget label="Overdue Fees" value={stats.pendingFees} icon={AlertCircle} color="orange" />
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatWidget label="Monthly Revenue" value={formatCurrency(stats.monthlyRevenue)} icon={TrendingUp} color="purple" />
+        {!isAdmin && (
+          <StatWidget label="Monthly Revenue" value={formatCurrency(stats.monthlyRevenue)} icon={TrendingUp} color="purple" />
+        )}
         <StatWidget label="Today's Classes" value={stats.todayClasses} icon={ClipboardList} color="blue" />
         <StatWidget label="Sessions Done" value={stats.teacherSessionsCompleted} icon={CheckCircle} color="green" />
         <StatWidget label="Salary Alerts" value={stats.salaryAlerts.length} icon={Clock} color="orange" />
@@ -99,18 +118,17 @@ export function AdminDashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Pending Fees</CardTitle>
-            <Badge variant="warning">{stats.pendingStudents.length} shown</Badge>
+            <CardTitle>Overdue Fees</CardTitle>
           </CardHeader>
           <div className="space-y-2">
             {stats.pendingStudents.length === 0 ? (
-              <p className="text-sm text-gray-400">No pending fees.</p>
+              <p className="text-sm text-gray-400">No overdue fees.</p>
             ) : (
               stats.pendingStudents.map((s, i) => (
                 <div key={i} className="flex justify-between text-sm">
                   <div>
                     <p className="font-medium">{s.studentName}</p>
-                    <p className="text-xs text-gray-400">{s.grade}</p>
+                    <p className="text-xs text-gray-400">{MONTHS[s.month - 1]?.label} {s.year} · {s.grade}</p>
                   </div>
                   <span className="font-semibold text-red-500">{formatCurrency(s.balance)}</span>
                 </div>

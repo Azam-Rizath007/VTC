@@ -27,6 +27,7 @@ interface FeeStats {
 
 interface Student {
   id: string
+  studentId: string
   name: string
   grade: { name: string }
 }
@@ -146,7 +147,10 @@ export default function FeesPage() {
     if (!studentSearch.trim()) return students
     const q = studentSearch.toLowerCase()
     return students.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.grade.name.toLowerCase().includes(q)
+      (s) =>
+        s.studentId.toLowerCase().includes(q) ||
+        s.name.toLowerCase().includes(q) ||
+        s.grade.name.toLowerCase().includes(q)
     )
   }, [students, studentSearch])
 
@@ -323,7 +327,7 @@ export default function FeesPage() {
 
       {/* Payment list filters */}
       <div className="space-y-2">
-        <SearchBar placeholder="Search by student name..." onChange={setListSearch} />
+        <SearchBar placeholder="Search by name or student ID..." onChange={setListSearch} />
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <Select
             placeholder="Month"
@@ -384,7 +388,7 @@ export default function FeesPage() {
               <div className="flex items-center justify-between bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
                 <div>
                   <p className="text-sm font-semibold text-indigo-900">{selectedStudent.name}</p>
-                  <p className="text-xs text-indigo-500">{selectedStudent.grade.name}</p>
+                  <p className="text-xs text-indigo-500">{selectedStudent.studentId} - {selectedStudent.grade.name}</p>
                 </div>
                 <button onClick={handleClearStudent} className="text-indigo-400 hover:text-indigo-600">
                   <X className="w-4 h-4" />
@@ -409,7 +413,7 @@ export default function FeesPage() {
                         className="flex items-center justify-between px-3 py-2 text-sm hover:bg-indigo-50 cursor-pointer"
                       >
                         <span className="font-medium">{s.name}</span>
-                        <span className="text-xs text-gray-400">{s.grade.name}</span>
+                        <span className="text-xs text-gray-400">{s.studentId} - {s.grade.name}</span>
                       </li>
                     ))}
                   </ul>

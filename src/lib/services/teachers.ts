@@ -35,6 +35,22 @@ export async function getTeacherSalaryAlerts() {
 }
 
 export async function markSalaryPaid(id: string) {
+  const salary = await prisma.teacherSalary.findUnique({ where: { id } })
+  if (!salary) throw new Error('Salary record not found')
+  if (salary.completedSessions < salary.requiredSessions) {
+    throw new Error('Required sessions are not completed')
+  }
+
+  return prisma.teacherSalary.update({
+    where: { id },
+    data: { status: SalaryStatus.PAID },
+  })
+}
+
+export async function markSalaryPaidWithOverride(id: string) {
+  const salary = await prisma.teacherSalary.findUnique({ where: { id } })
+  if (!salary) throw new Error('Salary record not found')
+
   return prisma.teacherSalary.update({
     where: { id },
     data: { status: SalaryStatus.PAID },

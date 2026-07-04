@@ -9,6 +9,7 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 
 interface PublicStudent {
   id: string
+  studentId: string
   name: string
   status: string
   grade: string
@@ -73,7 +74,7 @@ export default function PublicStudentPage() {
                 {student.status === 'ACTIVE' ? 'Active' : 'Inactive'}
               </Badge>
             </div>
-            <p className="text-sm text-gray-500">{student.grade}</p>
+            <p className="text-sm text-gray-500">{student.grade} - {student.studentId}</p>
           </div>
         </div>
       </div>

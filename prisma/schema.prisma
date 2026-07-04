@@ -112,6 +112,7 @@ model TeacherAssignment {
 
 model Student {
   id            String        @id @default(cuid())
+  studentId     String        @unique
   name          String
   gradeId       String
   parentName    String?
@@ -201,6 +202,7 @@ model StudentMonthlyFee {
   discount        Int           @default(0)
   balance         Int
   status          PaymentStatus @default(PENDING)
+  paidAt          DateTime?
 
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt

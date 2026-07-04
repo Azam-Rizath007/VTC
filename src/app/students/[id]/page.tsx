@@ -15,6 +15,7 @@ import type { StudentFormData } from '@/lib/validations/student'
 
 interface StudentDetail {
   id: string
+  studentId: string
   name: string
   status: 'ACTIVE' | 'INACTIVE'
   parentName?: string | null
@@ -117,7 +118,7 @@ export default function StudentDetailPage() {
               {student.status === 'ACTIVE' ? 'Active' : 'Inactive'}
             </Badge>
           </div>
-          <p className="text-sm text-gray-500">{student.grade.name}</p>
+          <p className="text-sm text-gray-500">{student.grade.name} - {student.studentId}</p>
         </div>
       </div>
 
@@ -158,7 +159,7 @@ export default function StudentDetailPage() {
           variant="outline"
           className={copied ? 'bg-green-50 text-green-700 border-green-200' : ''}
           onClick={async () => {
-            const publicUrl = `${window.location.origin}/p/${student.id}`
+            const publicUrl = `${window.location.origin}/p/${student.studentId}`
 
             try {
               await navigator.clipboard.writeText(publicUrl)
@@ -195,6 +196,10 @@ export default function StudentDetailPage() {
           <CardTitle>Basic Details</CardTitle>
         </CardHeader>
         <dl className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <dt className="text-gray-400">Student ID</dt>
+            <dd className="font-medium">{student.studentId}</dd>
+          </div>
           <div>
             <dt className="text-gray-400">Parent / Guardian</dt>
             <dd className="font-medium">{student.parentName || '—'}</dd>
