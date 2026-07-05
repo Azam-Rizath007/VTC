@@ -17,6 +17,16 @@ export function formatDate(date: Date | string) {
   })
 }
 
+export function formatDateTime(date: Date | string) {
+  return new Date(date).toLocaleString('en-PK', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function getInitials(name: string) {
   return name
     .split(' ')

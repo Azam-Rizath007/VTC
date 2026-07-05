@@ -48,6 +48,7 @@ model User {
   sessions      TeacherSession[]
   attendances   Attendance[]
   salaries      TeacherSalary[]
+  sessionOverrides SessionOverride[]
 }
 
 model Institute {
@@ -71,6 +72,7 @@ model Grade {
   assignments TeacherAssignment[]
   sessions    TeacherSession[]
   salaries    TeacherSalary[]
+  sessionOverrides SessionOverride[]
 }
 
 model Subject {
@@ -88,6 +90,7 @@ model Subject {
   sessions        TeacherSession[]
   payments        FeePayment[]
   salaries        TeacherSalary[]
+  sessionOverrides SessionOverride[]
 
   @@unique([name, gradeId])
 }
@@ -109,6 +112,7 @@ model TeacherAssignment {
 
 model Student {
   id            String        @id @default(cuid())
+  studentId     String        @unique
   name          String
   gradeId       String
   parentName    String?
@@ -122,6 +126,7 @@ model Student {
   subjects    StudentSubject[]
   attendances Attendance[]
   payments    FeePayment[]
+  monthlyFees StudentMonthlyFee[]
 }
 
 model StudentSubject {
@@ -186,6 +191,29 @@ model FeePayment {
   subject Subject @relation(fields: [subjectId], references: [id])
 }
 
+model StudentMonthlyFee {
+  id             String        @id @default(cuid())
+  studentId      String
+  month          Int
+  year           Int
+
+  expectedAmount Int
+  paidAmount     Int           @default(0)
+  discount        Int           @default(0)
+  balance         Int
+  status          PaymentStatus @default(PENDING)
+  paidAt          DateTime?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  student         Student       @relation(fields: [studentId], references: [id])
+
+  @@unique([studentId, month, year])
+  @@index([month, year, status])
+  @@index([studentId])
+}
+
 model TeacherSalary {
   id                String       @id @default(cuid())
   teacherId         String
@@ -210,4 +238,21 @@ model TeacherSalary {
 model SystemConfig {
   key   String @id
   value String
+}
+
+model SessionOverride {
+  id             String   @id @default(cuid())
+  subjectId      String
+  gradeId        String
+  month          Int
+  year           Int
+  extraSessions  Int      @default(1)
+  grantedBy      String
+  grantedAt      DateTime @updatedAt
+
+  subject   Subject @relation(fields: [subjectId], references: [id])
+  grade     Grade   @relation(fields: [gradeId], references: [id])
+  grantedByUser User @relation(fields: [grantedBy], references: [id])
+
+  @@unique([subjectId, gradeId, month, year])
 }

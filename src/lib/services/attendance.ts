@@ -55,6 +55,30 @@ export async function getStudentsForAttendance(gradeId: string, subjectId: strin
   })
 }
 
+export async function getEffectiveCap(subjectId: string, gradeId: string, month: number, year: number): Promise<number> {
+  const subject = await prisma.subject.findUnique({ where: { id: subjectId } })
+  const base = subject?.monthlySessionTarget ?? 0
+  const override = await prisma.sessionOverride.findUnique({
+    where: { subjectId_gradeId_month_year: { subjectId, gradeId, month, year } },
+  })
+  return base + (override?.extraSessions ?? 0)
+}
+
+export async function grantExtraSession(
+  subjectId: string,
+  gradeId: string,
+  month: number,
+  year: number,
+  adminUserId: string
+) {
+  return prisma.sessionOverride.upsert({
+    where: { subjectId_gradeId_month_year: { subjectId, gradeId, month, year } },
+    update: { extraSessions: { increment: 1 }, grantedBy: adminUserId },
+    create: { subjectId, gradeId, month, year, extraSessions: 1, grantedBy: adminUserId },
+  })
+}
+
+
 /**
  * Returns sessions recorded on a specific date AND the next session number
  * based on the month-wide count (not just today), so teachers always get
@@ -65,7 +89,7 @@ export async function getNextSessionNumber(
   gradeId: string,
   teacherId: string,
   date: Date
-): Promise<{ nextSession: number; todaySessions: number[] }> {
+): Promise<{ nextSession: number; todaySessions: number[]; effectiveCap: number }> {
   const dayStart = new Date(date)
   dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(date)
@@ -83,16 +107,15 @@ export async function getNextSessionNumber(
   })
   const todaySessions = todayRecords.map((r) => r.sessionNumber)
 
-  // Next session = month-wide TeacherSession count + 1
-  // This gives the correct sequential number regardless of which day the teacher opens the app
   const month = date.getMonth() + 1
   const year = date.getFullYear()
   const monthSessionCount = await prisma.teacherSession.count({
     where: { teacherId, subjectId, month, year },
   })
   const nextSession = monthSessionCount + 1
+  const effectiveCap = await getEffectiveCap(subjectId, gradeId, month, year)
 
-  return { nextSession, todaySessions }
+  return { nextSession, todaySessions, effectiveCap }
 }
 export async function getAttendanceForSession(
   subjectId: string,
@@ -121,7 +144,6 @@ export async function getAttendanceForSession(
 export async function saveAttendance(records: AttendanceInput[], isTeacher = true) {
   if (records.length === 0) return []
 
-  const results = []
   const first = records[0]
 
   const dayStart = new Date(first.date)
@@ -142,64 +164,68 @@ export async function saveAttendance(records: AttendanceInput[], isTeacher = tru
     if (!isExistingSession) {
       const subject = await prisma.subject.findUnique({ where: { id: first.subjectId } })
       const target = subject?.monthlySessionTarget ?? 0
-      if (target > 0) {
+      if (target > 0 && subject) {
         const month = first.date.getMonth() + 1
         const year = first.date.getFullYear()
+        const effectiveCap = await getEffectiveCap(first.subjectId, subject.gradeId, month, year)
         const completed = await prisma.teacherSession.count({
           where: { teacherId: first.teacherId, subjectId: first.subjectId, month, year },
         })
-        if (completed >= target) {
-          throw new Error(`Session limit reached. This subject allows ${target} sessions per month and ${completed} have already been recorded.`)
+        if (completed >= effectiveCap) {
+          throw new Error(`Session limit reached. This subject allows ${effectiveCap} sessions per month and ${completed} have already been recorded.`)
         }
       }
     }
   }
 
-  for (const record of records) {
-    // Upsert per student+subject+sessionNumber within the same calendar day
-    const existing = await prisma.attendance.findFirst({
-      where: {
-        studentId: record.studentId,
-        subjectId: record.subjectId,
-        sessionNumber: record.sessionNumber,
-        date: { gte: dayStart, lte: dayEnd },
-      },
-    })
+  // #2 — batch: one findMany to fetch all existing records for this session/day,
+  // then split into updates vs creates and run them in a transaction.
+  const studentIds = records.map((r) => r.studentId)
 
-    if (existing) {
-      results.push(
-        await prisma.attendance.update({
-          where: { id: existing.id },
-          data: {
-            status: record.status,
-            teacherId: record.teacherId,
-            ...(record.remarks !== undefined && { remarks: record.remarks }),
-          },
-        })
-      )
-    } else {
-      results.push(
-        await prisma.attendance.create({
-          data: {
-            studentId: record.studentId,
-            subjectId: record.subjectId,
-            teacherId: record.teacherId,
-            date: record.date,
-            sessionNumber: record.sessionNumber,
-            status: record.status,
-            remarks: record.remarks ?? null,
-          },
-        })
-      )
-    }
-  }
+  const existingRecords = await prisma.attendance.findMany({
+    where: {
+      subjectId: first.subjectId,
+      sessionNumber: first.sessionNumber,
+      studentId: { in: studentIds },
+      date: { gte: dayStart, lte: dayEnd },
+    },
+    select: { id: true, studentId: true },
+  })
+  const existingMap = new Map(existingRecords.map((r) => [r.studentId, r.id]))
+
+  const toUpdate = records.filter((r) => existingMap.has(r.studentId))
+  const toCreate = records.filter((r) => !existingMap.has(r.studentId))
+
+  const results = await prisma.$transaction([
+    ...toUpdate.map((r) =>
+      prisma.attendance.update({
+        where: { id: existingMap.get(r.studentId)! },
+        data: {
+          status: r.status,
+          teacherId: r.teacherId,
+          ...(r.remarks !== undefined && { remarks: r.remarks }),
+        },
+      })
+    ),
+    ...toCreate.map((r) =>
+      prisma.attendance.create({
+        data: {
+          studentId: r.studentId,
+          subjectId: r.subjectId,
+          teacherId: r.teacherId,
+          date: r.date,
+          sessionNumber: r.sessionNumber,
+          status: r.status,
+          remarks: r.remarks ?? null,
+        },
+      })
+    ),
+  ])
 
   // TeacherSession tracking and salary — teachers only
-  // Admins updating attendance must not affect session counts or salary
   if (isTeacher) {
     const subject = await prisma.subject.findUnique({
       where: { id: first.subjectId },
-      include: { grade: true },
     })
 
     if (subject) {
@@ -242,25 +268,22 @@ async function upsertTeacherSalary(
   month: number,
   year: number
 ) {
-  const subject = await prisma.subject.findUnique({ where: { id: subjectId } })
-  const requiredSessions = subject?.monthlySessionTarget ?? 12
+  // Batch: fetch subject, assignment, institute, session count, and existing salary in parallel
+  const [subject, assignment, institute, completedSessions, existing] = await Promise.all([
+    prisma.subject.findUnique({ where: { id: subjectId }, select: { monthlySessionTarget: true } }),
+    prisma.teacherAssignment.findFirst({
+      where: { userId: teacherId, subjectId, gradeId },
+      select: { rate: true },
+    }),
+    prisma.institute.findFirst({ select: { defaultTeacherRate: true } }),
+    prisma.teacherSession.count({ where: { teacherId, subjectId, month, year } }),
+    prisma.teacherSalary.findFirst({ where: { teacherId, subjectId, gradeId, month, year } }),
+  ])
 
-  // Use the rate from the teacher's assignment for this subject+grade
-  const assignment = await prisma.teacherAssignment.findFirst({
-    where: { userId: teacherId, subjectId, gradeId },
-  })
-  const institute = await prisma.institute.findFirst()
+  const requiredSessions = subject?.monthlySessionTarget ?? 12
   const rate = assignment?.rate && assignment.rate > 0
     ? assignment.rate
     : (institute?.defaultTeacherRate ?? 5000)
-
-  const completedSessions = await prisma.teacherSession.count({
-    where: { teacherId, subjectId, month, year },
-  })
-
-  const existing = await prisma.teacherSalary.findFirst({
-    where: { teacherId, subjectId, gradeId, month, year },
-  })
 
   const data = {
     completedSessions,

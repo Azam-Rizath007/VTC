@@ -15,6 +15,7 @@ import { authFetch } from '@/lib/client-api'
 
 interface Student {
   id: string
+  studentId: string
   name: string
   status: 'ACTIVE' | 'INACTIVE'
   parentName?: string | null
@@ -47,15 +48,33 @@ export default function StudentsPage() {
 
   const loadStudents = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (search) params.set('search', search)
-    if (gradeId) params.set('gradeId', gradeId)
-    if (subjectId) params.set('subjectId', subjectId)
-    if (status) params.set('status', status)
 
-    const { data } = await authFetch<{ students: Student[] }>(`/api/students?${params}`)
-    if (data?.students) setStudents(data.students)
-    setLoading(false)
+    try {
+      const params = new URLSearchParams()
+
+      if (search.trim()) params.set('search', search.trim())
+      if (gradeId) params.set('gradeId', gradeId)
+      if (subjectId) params.set('subjectId', subjectId)
+      if (status) params.set('status', status)
+
+      const query = params.toString()
+      const url = query ? `/api/students?${query}` : '/api/students'
+
+      const { data, error } = await authFetch<{ students: Student[] }>(url)
+
+      if (error) {
+        console.error('Failed to load students:', error)
+        setStudents([])
+        return
+      }
+
+      setStudents(data?.students ?? [])
+    } catch (err) {
+      console.error('Failed to load students:', err)
+      setStudents([])
+    } finally {
+      setLoading(false)
+    }
   }, [search, gradeId, subjectId, status])
 
   useEffect(() => {
@@ -63,13 +82,25 @@ export default function StudentsPage() {
   }, [loadGrades])
 
   useEffect(() => {
-    const timer = setTimeout(loadStudents, 300)
-    return () => clearTimeout(timer)
+    loadStudents()
   }, [loadStudents])
 
   const subjectOptions = grades
     .find((g) => g.id === gradeId)
     ?.subjects.map((s) => ({ value: s.id, label: s.name })) ?? []
+  
+  const handleToggleStatus = async (student: Student) => {
+    const newStatus = student.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+
+    await authFetch(`/api/students/${student.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: newStatus,
+      }),
+    })
+
+    loadStudents()
+  }
 
   return (
     <div className="space-y-4">
@@ -81,7 +112,7 @@ export default function StudentsPage() {
         </Button>
       </div>
 
-      <SearchBar placeholder="Search by name or parent..." onChange={setSearch} />
+      <SearchBar placeholder="Search by ID, name, or parent..." onChange={setSearch} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Select
@@ -127,16 +158,44 @@ export default function StudentsPage() {
       ) : (
         <div className="space-y-3">
           {students.map((student) => (
+            // <MobileListCard
+            //   key={student.id}
+            //   title={student.name}
+            //   subtitle={`${student.grade.name} · ${student.subjects.map((s) => s.subject.name).join(', ')}`}
+            //   meta={student.parentContact || undefined}
+            //   left={<Avatar name={student.name} />}
+            //   badge={
+            //     <div className="flex items-center gap-2">
+            //       <Badge variant={student.status === 'ACTIVE' ? 'success' : 'neutral'}>
+            //         {student.status === 'ACTIVE' ? 'Active' : 'Inactive'}
+            //       </Badge>
+
+            //       <Button
+            //         size="sm"
+            //         variant={student.status === 'ACTIVE' ? 'outline' : 'primary'}
+            //         onClick={(e) => {
+            //           e.stopPropagation()
+            //           handleToggleStatus(student)
+            //         }}
+            //       >
+            //         {student.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+            //       </Button>
+            //     </div>
+            //   }
+            //   onClick={() => router.push(`/students/${student.id}`)}
+            // />
             <MobileListCard
               key={student.id}
               title={student.name}
               subtitle={`${student.grade.name} · ${student.subjects.map((s) => s.subject.name).join(', ')}`}
-              meta={student.parentContact || undefined}
+              meta={student.parentContact ? `${student.studentId} - ${student.parentContact}` : student.studentId}
               left={<Avatar name={student.name} />}
               badge={
-                <Badge variant={student.status === 'ACTIVE' ? 'success' : 'neutral'}>
-                  {student.status === 'ACTIVE' ? 'Active' : 'Inactive'}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant={student.status === 'ACTIVE' ? 'success' : 'neutral'}>
+                    {student.status === 'ACTIVE' ? 'Active' : 'Inactive'}
+                  </Badge>
+                </div>
               }
               onClick={() => router.push(`/students/${student.id}`)}
             />

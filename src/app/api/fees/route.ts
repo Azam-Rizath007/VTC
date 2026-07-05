@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Role } from '@/generated/prisma'
+import { PaymentStatus, Role } from '@/generated/prisma'
 import { isAuthUser, requireAuth } from '@/lib/api-auth'
 import { listPayments, recordBulkPayment } from '@/lib/services/fees'
 import { z } from 'zod'
 
 const bulkPaymentSchema = z.object({
   studentId: z.string().min(1, 'Student is required'),
-  month: z.number().int().min(1).max(12),
-  year: z.number().int().min(2020),
-  amountPaid: z.number().min(0),
-  discount: z.number().min(0).default(0),
+  month: z.coerce.number().int().min(1).max(12),
+  year: z.coerce.number().int().min(2020),
+  amountPaid: z.coerce.number().min(0),
+  discount: z.coerce.number().min(0).default(0),
   isFullPayment: z.boolean().default(false),
 })
 
@@ -18,12 +18,17 @@ export async function GET(req: NextRequest) {
   if (!isAuthUser(auth)) return auth
 
   const { searchParams } = req.nextUrl
+  const status = searchParams.get('status')
+  if (status && !Object.values(PaymentStatus).includes(status as PaymentStatus)) {
+    return NextResponse.json({ error: 'Invalid payment status' }, { status: 400 })
+  }
+
   const payments = await listPayments({
     search: searchParams.get('search') || undefined,
     month: searchParams.get('month') ? Number(searchParams.get('month')) : undefined,
     year: searchParams.get('year') ? Number(searchParams.get('year')) : undefined,
     gradeId: searchParams.get('gradeId') || undefined,
-    subjectId: searchParams.get('subjectId') || undefined,
+    status: (status as PaymentStatus) || undefined,
   })
 
   return NextResponse.json({ payments })

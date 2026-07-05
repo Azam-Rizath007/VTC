@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Edit, UserX, ClipboardList } from 'lucide-react'
+import { ArrowLeft, Edit, UserX, UserCheck, ClipboardList, Share2 } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -10,11 +10,12 @@ import { LoadingState } from '@/components/ui/LoadingState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { StudentForm } from '@/components/students/StudentForm'
 import { authFetch } from '@/lib/client-api'
-import { formatCurrency, formatDate } from '@/lib/utils'
+import { formatCurrency } from '@/lib/utils'
 import type { StudentFormData } from '@/lib/validations/student'
 
 interface StudentDetail {
   id: string
+  studentId: string
   name: string
   status: 'ACTIVE' | 'INACTIVE'
   parentName?: string | null
@@ -23,14 +24,6 @@ interface StudentDetail {
   grade: { id: string; name: string }
   subjects: { subject: { id: string; name: string; fee: number } }[]
   pendingBalance: number
-  feeStatus: {
-    subjectName: string
-    fee: number
-    amountDue: number
-    amountPaid: number
-    balance: number
-    status: string
-  }[]
   attendanceSummary: {
     subject: string
     present: number
@@ -38,14 +31,12 @@ interface StudentDetail {
     total: number
   }[]
   paymentHistory: {
-    id: string
     month: number
     year: number
     amountPaid: number
     balance: number
     status: string
     paidAt?: string | null
-    subject: { name: string }
   }[]
 }
 
@@ -63,8 +54,9 @@ export default function StudentDetailPage() {
   const [student, setStudent] = useState<StudentDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [showDeactivate, setShowDeactivate] = useState(false)
-  const [deactivating, setDeactivating] = useState(false)
+  const [showStatusDialog, setShowStatusDialog] = useState(false)
+  const [updatingStatus, setUpdatingStatus] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const loadStudent = useCallback(async () => {
     setLoading(true)
@@ -81,11 +73,22 @@ export default function StudentDetailPage() {
     loadStudent()
   }, [loadStudent])
 
-  const handleDeactivate = async () => {
-    setDeactivating(true)
-    await authFetch(`/api/students/${id}`, { method: 'DELETE' })
-    setDeactivating(false)
-    setShowDeactivate(false)
+  const handleToggleStatus = async () => {
+    if (!student) return
+
+    const newStatus = student.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+
+    setUpdatingStatus(true)
+
+    await authFetch(`/api/students/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: newStatus,
+      }),
+    })
+
+    setUpdatingStatus(false)
+    setShowStatusDialog(false)
     loadStudent()
   }
 
@@ -115,7 +118,7 @@ export default function StudentDetailPage() {
               {student.status === 'ACTIVE' ? 'Active' : 'Inactive'}
             </Badge>
           </div>
-          <p className="text-sm text-gray-500">{student.grade.name}</p>
+          <p className="text-sm text-gray-500">{student.grade.name} - {student.studentId}</p>
         </div>
       </div>
 
@@ -130,12 +133,62 @@ export default function StudentDetailPage() {
             Attendance
           </Button>
         </Link>
-        {student.status === 'ACTIVE' && (
-          <Button size="sm" variant="danger" onClick={() => setShowDeactivate(true)}>
+        {/* <Button
+          size="sm"
+          variant={copied ? 'success' : 'outline'}
+          onClick={async () => {
+            const publicUrl = `${window.location.origin}/p/${student.id}`
+
+            try {
+              await navigator.clipboard.writeText(publicUrl)
+              setCopied(true)
+
+              setTimeout(() => {
+                setCopied(false)
+              }, 1500)
+            } catch {
+              setCopied(false)
+            }
+          }}
+        >
+          <Share2 className="w-4 h-4" />
+          {copied ? 'Copied' : 'Share Profile'}
+        </Button> */}
+        <Button
+          size="sm"
+          variant="outline"
+          className={copied ? 'bg-green-50 text-green-700 border-green-200' : ''}
+          onClick={async () => {
+            const publicUrl = `${window.location.origin}/p/${student.studentId}`
+
+            try {
+              await navigator.clipboard.writeText(publicUrl)
+              setCopied(true)
+
+              setTimeout(() => {
+                setCopied(false)
+              }, 1500)
+            } catch {
+              setCopied(false)
+            }
+          }}
+        >
+          <Share2 className="w-4 h-4" />
+          {copied ? 'Copied' : 'Share Profile'}
+        </Button>
+        <Button
+          size="sm"
+          variant={student.status === 'ACTIVE' ? 'danger' : 'outline'}
+          onClick={() => setShowStatusDialog(true)}
+        >
+          {student.status === 'ACTIVE' ? (
             <UserX className="w-4 h-4" />
-            Deactivate
-          </Button>
-        )}
+          ) : (
+            <UserCheck className="w-4 h-4" />
+          )}
+
+          {student.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+        </Button>
       </div>
 
       <Card>
@@ -143,6 +196,10 @@ export default function StudentDetailPage() {
           <CardTitle>Basic Details</CardTitle>
         </CardHeader>
         <dl className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <dt className="text-gray-400">Student ID</dt>
+            <dd className="font-medium">{student.studentId}</dd>
+          </div>
           <div>
             <dt className="text-gray-400">Parent / Guardian</dt>
             <dd className="font-medium">{student.parentName || '—'}</dd>
@@ -162,6 +219,31 @@ export default function StudentDetailPage() {
         </dl>
       </Card>
 
+      {(() => {
+        const pendingMonths = student.paymentHistory.filter(
+          (p) => p.status === 'PENDING' || p.status === 'PARTIAL'
+        )
+        if (pendingMonths.length === 0) return null
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Pending Payments</CardTitle>
+            </CardHeader>
+            <div className="space-y-3">
+              {pendingMonths.map((payment) => (
+                <div key={`pending-${payment.year}-${payment.month}`} className="flex items-center justify-between text-sm">
+                  <p className="font-medium">{MONTHS[payment.month - 1]} {payment.year}</p>
+                  <div className="text-right">
+                    <p className="font-semibold text-red-500">{formatCurrency(payment.balance)}</p>
+                    {statusBadge(payment.status)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )
+      })()}
+
       <Card>
         <CardHeader>
           <CardTitle>Enrolled Subjects</CardTitle>
@@ -169,35 +251,12 @@ export default function StudentDetailPage() {
         <div className="flex flex-wrap gap-2">
           {student.subjects.map(({ subject }) => (
             <Badge key={subject.id} variant="maroon">
-              {subject.name} · {formatCurrency(subject.fee)}
+              {subject.name}
             </Badge>
           ))}
         </div>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Fee Status (This Month)</CardTitle>
-        </CardHeader>
-        <div className="space-y-3">
-          {student.feeStatus.map((fee) => (
-            <div key={fee.subjectName} className="flex items-center justify-between text-sm">
-              <div>
-                <p className="font-medium">{fee.subjectName}</p>
-                <p className="text-xs text-gray-400">
-                  Paid {formatCurrency(fee.amountPaid)} of {formatCurrency(fee.amountDue)}
-                </p>
-              </div>
-              <div className="text-right">
-                {statusBadge(fee.status)}
-                {fee.balance > 0 && (
-                  <p className="text-xs text-red-500 mt-1">{formatCurrency(fee.balance)} due</p>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
 
       <Card>
         <CardHeader>
@@ -227,27 +286,24 @@ export default function StudentDetailPage() {
         <CardHeader>
           <CardTitle>Payment History</CardTitle>
         </CardHeader>
-        {student.paymentHistory.length === 0 ? (
-          <p className="text-sm text-gray-400">No payments recorded yet.</p>
-        ) : (
-          <div className="space-y-3">
-            {student.paymentHistory.map((payment) => (
-              <div key={payment.id} className="flex items-center justify-between text-sm">
-                <div>
-                  <p className="font-medium">{payment.subject.name}</p>
-                  <p className="text-xs text-gray-400">
-                    {MONTHS[payment.month - 1]} {payment.year}
-                    {payment.paidAt && ` · ${formatDate(payment.paidAt)}`}
-                  </p>
+        {(() => {
+          const paidMonths = student.paymentHistory.filter((p) => p.amountPaid > 0)
+          return paidMonths.length === 0 ? (
+            <p className="text-sm text-gray-400">No payments recorded yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {paidMonths.map((payment) => (
+                <div key={`${payment.year}-${payment.month}`} className="flex items-center justify-between text-sm">
+                  <p className="font-medium">{MONTHS[payment.month - 1]} {payment.year}</p>
+                  <div className="text-right">
+                    <p className="font-semibold text-green-600">{formatCurrency(payment.amountPaid)}</p>
+                    {statusBadge(payment.status)}
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="font-semibold text-green-600">{formatCurrency(payment.amountPaid)}</p>
-                  {statusBadge(payment.status)}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )
+        })()}
       </Card>
 
       <StudentForm
@@ -258,14 +314,18 @@ export default function StudentDetailPage() {
       />
 
       <ConfirmDialog
-        open={showDeactivate}
-        onClose={() => setShowDeactivate(false)}
-        onConfirm={handleDeactivate}
-        title="Deactivate Student"
-        message={`Are you sure you want to deactivate ${student.name}? They will no longer appear in active lists.`}
-        confirmLabel="Deactivate"
-        loading={deactivating}
-        danger
+        open={showStatusDialog}
+        onClose={() => setShowStatusDialog(false)}
+        onConfirm={handleToggleStatus}
+        title={student.status === 'ACTIVE' ? 'Deactivate Student' : 'Activate Student'}
+        message={
+          student.status === 'ACTIVE'
+            ? `Are you sure you want to deactivate ${student.name}? They will no longer appear in active lists.`
+            : `Are you sure you want to activate ${student.name}? They will appear in active lists again.`
+        }
+        confirmLabel={student.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+        loading={updatingStatus}
+        danger={student.status === 'ACTIVE'}
       />
     </div>
   )

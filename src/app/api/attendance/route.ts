@@ -51,7 +51,14 @@ export async function GET(req: NextRequest) {
     if (!subjectId || !gradeId || !date) {
       return NextResponse.json({ error: 'subjectId, gradeId, and date required' }, { status: 400 })
     }
-    const result = await getNextSessionNumber(subjectId, gradeId, auth.userId, new Date(date))
+    // For admins, look up the assigned teacher for this subject+grade
+    let teacherId = auth.userId
+    if (auth.role !== Role.TEACHER) {
+      const { prisma } = await import('@/lib/prisma')
+      const assignment = await prisma.teacherAssignment.findFirst({ where: { subjectId, gradeId } })
+      if (assignment) teacherId = assignment.userId
+    }
+    const result = await getNextSessionNumber(subjectId, gradeId, teacherId, new Date(date))
     return NextResponse.json(result)
   }
 
@@ -112,7 +119,18 @@ export async function POST(req: NextRequest) {
     const isTeacher = auth.role === Role.TEACHER
     const now = new Date()
     const [year, month, day] = date.split('-').map(Number)
-    const sessionDateTime = new Date(year, month - 1, day, now.getHours(), now.getMinutes(), now.getSeconds())
+
+    const sessionDate = new Date(year, month - 1, day)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    if (sessionDate > today) {
+      return NextResponse.json({ error: 'Cannot record attendance for a future date.' }, { status: 400 })
+    }
+
+    // Build the session datetime: use the client's calendar date (IST) at the current
+    // wall-clock time, but expressed correctly so the stored UTC value falls on the
+    // same IST calendar day.  We store noon IST (06:30 UTC) of the chosen date so
+    // timezone boundaries never cause the record to drift to a neighbouring day.
+    const sessionDateTime = new Date(Date.UTC(year, month - 1, day, 6, 30, 0))
 
     // For admin saves, look up the assigned teacher for this subject+grade.
     // Admin's userId must not be stored as teacherId — it would corrupt session/salary tracking.

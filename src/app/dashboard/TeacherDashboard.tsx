@@ -8,7 +8,7 @@ import { LoadingState } from '@/components/ui/LoadingState'
 import { useAuthStore } from '@/store/auth'
 import { authFetch } from '@/lib/client-api'
 import { formatCurrency } from '@/lib/utils'
-import { ClipboardList, CheckCircle, Clock, DollarSign } from 'lucide-react'
+import { ClipboardList, CheckCircle, Clock, DollarSign, AlertCircle } from 'lucide-react'
 
 const MONTHS = [
   { value: '1', label: 'January' }, { value: '2', label: 'February' },
@@ -68,6 +68,11 @@ export function TeacherDashboard() {
 
   const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
 
+  // Unpaid salary balance for the selected month
+  const pendingBalance = stats?.subjects
+    .filter((s) => s.salaryStatus !== 'PAID')
+    .reduce((sum, s) => sum + s.revenue, 0) ?? 0
+
   if (loading && !stats) return <LoadingState message="Loading dashboard..." />
 
   return (
@@ -124,6 +129,13 @@ export function TeacherDashboard() {
           value={formatCurrency(stats?.totalRevenue ?? 0)}
           icon={DollarSign}
           color="purple"
+        />
+        <StatWidget
+          label="Pending Balance"
+          value={formatCurrency(pendingBalance)}
+          icon={AlertCircle}
+          color="maroon"
+          className="col-span-2"
         />
       </div>
 

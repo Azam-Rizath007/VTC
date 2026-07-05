@@ -1,161 +1,182 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Select } from '@/components/ui/Select'
-import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
+import { Input } from '@/components/ui/Input'
+import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
 import { LoadingState } from '@/components/ui/LoadingState'
 import { authFetch } from '@/lib/client-api'
-import { formatCurrency } from '@/lib/utils'
-import { BarChart3, Download } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
+import { formatCurrency, formatDateTime } from '@/lib/utils'
+import { useAuthStore } from '@/store/auth'
+
+const MONTHS = [
+  'January','February','March','April','May','June',
+  'July','August','September','October','November','December',
+]
+
+interface Salary {
+  id: string
+  teacherId: string
+  subjectId: string
+  gradeId: string
+  completedSessions: number
+  requiredSessions: number
+  rate: number
+  totalPayable: number
+  status: string
+  teacher: { name: string }
+  subject: { name: string }
+  grade: { name: string }
+}
+
+interface Session {
+  id: string
+  date: string
+}
 
 export default function ReportsPage() {
+  const { user } = useAuthStore()
   const now = new Date()
-  const [loading, setLoading] = useState(true)
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
-  const [report, setReport] = useState<{
-    students: number
-    activeStudents: number
-    payments: { student: { name: string }; subject: { name: string }; amountPaid: number; status: string }[]
-    attendance: { student: { name: string }; subject: { name: string }; status: string }[]
-    salaries: { teacher: { name: string }; subject: { name: string }; totalPayable: number; completedSessions: number }[]
-    totalCollection: number
-    pendingCount: number
-  } | null>(null)
+  const [salaries, setSalaries] = useState<Salary[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState<string | null>(null)
+
+  // expanded row → sessions
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [statsRes, paymentsRes, attendanceRes, salariesRes, studentsRes] = await Promise.all([
-      authFetch<{ totalStudents: number; activeStudents: number; monthlyRevenue: number; pendingFees: number }>('/api/dashboard/stats'),
-      authFetch<{ payments: typeof report extends null ? never : NonNullable<typeof report>['payments'] }>(`/api/fees?month=${month}&year=${year}`),
-      authFetch<{ attendance: typeof report extends null ? never : NonNullable<typeof report>['attendance'] }>(`/api/attendance?month=${month}&year=${year}`),
-      authFetch<{ salaries: typeof report extends null ? never : NonNullable<typeof report>['salaries'] }>(`/api/teachers/salary?month=${month}&year=${year}`),
-      authFetch<{ students: unknown[] }>('/api/students'),
-    ])
-
-    setReport({
-      students: statsRes.data?.totalStudents ?? 0,
-      activeStudents: statsRes.data?.activeStudents ?? 0,
-      totalCollection: statsRes.data?.monthlyRevenue ?? 0,
-      pendingCount: statsRes.data?.pendingFees ?? 0,
-      payments: paymentsRes.data?.payments ?? [],
-      attendance: attendanceRes.data?.attendance ?? [],
-      salaries: salariesRes.data?.salaries ?? [],
-    })
+    const { data } = await authFetch<{ salaries: Salary[] }>(
+      `/api/teachers/salary?month=${month}&year=${year}`
+    )
+    setSalaries(data?.salaries ?? [])
+    setExpanded(null)
     setLoading(false)
   }, [month, year])
 
-  useEffect(() => {
-    load()
-  }, [load])
+  useEffect(() => { load() }, [load])
 
-  const exportCsv = (filename: string, rows: string[][]) => {
-    const csv = rows.map((r) => r.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
+  const toggleExpand = async (s: Salary) => {
+    if (expanded === s.id) { setExpanded(null); return }
+    setExpanded(s.id)
+    setSessionsLoading(true)
+    setSessions([])
+    const { data } = await authFetch<{ sessions: Session[] }>(
+      `/api/teachers/sessions?teacherId=${s.teacherId}&subjectId=${s.subjectId}&gradeId=${s.gradeId}&month=${month}&year=${year}`
+    )
+    setSessions(data?.sessions ?? [])
+    setSessionsLoading(false)
   }
 
-  const exportPayments = () => {
-    if (!report) return
-    exportCsv(`fee-report-${month}-${year}.csv`, [
-      ['Student', 'Subject', 'Amount Paid', 'Status'],
-      ...report.payments.map((p) => [p.student.name, p.subject.name, String(p.amountPaid), p.status]),
-    ])
+  const markPaid = async (id: string) => {
+    setSaving(id)
+    await authFetch('/api/teachers/salary', { method: 'PATCH', body: JSON.stringify({ id }) })
+    setSaving(null)
+    load()
   }
 
   if (loading) return <LoadingState message="Loading reports..." />
-
-  const presentCount = report?.attendance.filter((a) => a.status === 'PRESENT').length ?? 0
-  const absentCount = report?.attendance.filter((a) => a.status === 'ABSENT').length ?? 0
 
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-bold text-gray-900">Reports</h1>
 
+      {/* Month / Year picker */}
       <div className="grid grid-cols-2 gap-3">
         <Select
           label="Month"
-          options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))}
+          options={MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))}
           value={String(month)}
           onChange={(e) => setMonth(Number(e.target.value))}
         />
-        <Select
+        <Input
           label="Year"
-          options={[year - 1, year, year + 1].map((y) => ({ value: String(y), label: String(y) }))}
-          value={String(year)}
+          type="number"
+          value={year}
           onChange={(e) => setYear(Number(e.target.value))}
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Card padding="sm">
-          <p className="text-xs text-gray-400">Total Students</p>
-          <p className="text-xl font-bold">{report?.students}</p>
-        </Card>
-        <Card padding="sm">
-          <p className="text-xs text-gray-400">Collection</p>
-          <p className="text-xl font-bold">{formatCurrency(report?.totalCollection ?? 0)}</p>
-        </Card>
-        <Card padding="sm">
-          <p className="text-xs text-gray-400">Pending Fees</p>
-          <p className="text-xl font-bold">{report?.pendingCount}</p>
-        </Card>
-        <Card padding="sm">
-          <p className="text-xs text-gray-400">Attendance</p>
-          <p className="text-xl font-bold">{presentCount}P / {absentCount}A</p>
-        </Card>
-      </div>
-
+      {/* Salary Report */}
       <Card>
         <CardHeader>
-          <CardTitle>Fee Collection Report</CardTitle>
-          <Button size="sm" variant="outline" onClick={exportPayments}>
-            <Download className="w-4 h-4" />
-            CSV
-          </Button>
-        </CardHeader>
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {!report?.payments.length ? (
-            <p className="text-sm text-gray-400">No payments this month.</p>
-          ) : (
-            report.payments.map((p, i) => (
-              <div key={i} className="flex justify-between text-sm">
-                <div>
-                  <p className="font-medium">{p.student.name}</p>
-                  <p className="text-xs text-gray-400">{p.subject.name}</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-semibold">{formatCurrency(p.amountPaid)}</p>
-                  <Badge variant={p.status === 'PAID' ? 'success' : 'warning'}>{p.status}</Badge>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Teacher Salary Report</CardTitle>
-          <BarChart3 className="w-5 h-5 text-gray-400" />
+          <CardTitle>Salary Report — {MONTHS[month - 1]} {year}</CardTitle>
         </CardHeader>
         <div className="space-y-2">
-          {!report?.salaries.length ? (
-            <p className="text-sm text-gray-400">No salary records.</p>
+          {salaries.length === 0 ? (
+            <p className="text-sm text-gray-400">No salary records for this month.</p>
           ) : (
-            report.salaries.map((s, i) => (
-              <div key={i} className="flex justify-between text-sm">
-                <div>
-                  <p className="font-medium">{s.teacher.name}</p>
-                  <p className="text-xs text-gray-400">{s.subject.name} · {s.completedSessions} sessions</p>
+            salaries.map((s) => (
+              <div key={s.id} className="rounded-xl border border-gray-100 overflow-hidden">
+                {/* Row */}
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors text-left cursor-pointer"
+                  onClick={() => toggleExpand(s)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(s) } }}
+                >
+                  <div className="flex items-center gap-2">
+                    {expanded === s.id
+                      ? <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      : <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                    }
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{s.teacher.name}</p>
+                      <p className="text-xs text-gray-400 flex flex-wrap items-center gap-1">
+                        {s.subject.name} · {s.grade.name} · {s.completedSessions}/{s.requiredSessions} sessions
+                        {s.completedSessions < s.requiredSessions && (
+                          <Badge variant="warning">Not completed</Badge>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-400">Rate: {formatCurrency(s.rate)}/session</p>
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0 ml-2">
+                    <p className="font-semibold text-indigo-700">{formatCurrency(s.totalPayable)}</p>
+                    {s.status === 'PAID' ? (
+                      <Badge variant="success">Paid</Badge>
+                    ) : user?.role === 'SUPER_ADMIN' || s.completedSessions >= s.requiredSessions ? (
+                      <Button
+                        size="sm"
+                        className="px-2 py-1 text-xs rounded-md"
+                        loading={saving === s.id}
+                        onClick={(e) => { e.stopPropagation(); markPaid(s.id) }}
+                      >
+                        Mark Paid
+                      </Button>
+                    ) : (
+                      <Badge variant="warning">Pending</Badge>
+                    )}
+                  </div>
                 </div>
-                <span className="font-semibold">{formatCurrency(s.totalPayable)}</span>
+
+                {/* Expanded sessions */}
+                {expanded === s.id && (
+                  <div className="border-t border-gray-100 bg-gray-50 px-4 py-3">
+                    {sessionsLoading ? (
+                      <p className="text-xs text-gray-400">Loading sessions...</p>
+                    ) : sessions.length === 0 ? (
+                      <p className="text-xs text-gray-400">No sessions recorded for this month.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-gray-500 mb-2">Sessions ({sessions.length})</p>
+                        {sessions.map((sess, i) => (
+                          <div key={sess.id} className="flex items-center gap-3 text-xs text-gray-600">
+                            <span className="w-5 text-gray-400 font-medium">#{i + 1}</span>
+                            <span>{formatDateTime(sess.date)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))
           )}

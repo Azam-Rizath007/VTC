@@ -28,7 +28,7 @@ export interface PaymentFilters {
   month?: number
   year?: number
   gradeId?: string
-  subjectId?: string
+  status?: PaymentStatus
 }
 
 function calcStatus(balance: number, amountPaid: number): PaymentStatus {
@@ -37,91 +37,519 @@ function calcStatus(balance: number, amountPaid: number): PaymentStatus {
   return PaymentStatus.PENDING
 }
 
+function calcMonthlyStatus(balance: number, paidAmount: number): PaymentStatus {
+  if (balance <= 0 && paidAmount > 0) return PaymentStatus.PAID
+  if (paidAmount > 0) return PaymentStatus.PARTIAL
+  return PaymentStatus.PENDING
+}
+
+export function isDetailedFeeEnabled() {
+  const value = (process.env.DETAIL_FEE ?? process.env.detail_fee ?? 'true').toLowerCase()
+  return !['false', '0', 'no', 'off'].includes(value)
+}
+
+function getFeeMonthEnd(month: number, year: number) {
+  return new Date(year, month, 1)
+}
+
+export function isFeeMonthBeforeStudentJoined(joinedAt: Date, month: number, year: number) {
+  const joinMonth = joinedAt.getMonth() + 1
+  const joinYear = joinedAt.getFullYear()
+  return year < joinYear || (year === joinYear && month < joinMonth)
+}
+
+export function isFutureFeeMonth(month: number, year: number, now = new Date()) {
+  const currentMonth = now.getMonth() + 1
+  const currentYear = now.getFullYear()
+  return year > currentYear || (year === currentYear && month > currentMonth)
+}
+
+export function isCurrentOrPastFeeMonth(month: number, year: number, now = new Date()) {
+  return !isFutureFeeMonth(month, year, now)
+}
+
+export function isBillableFeeMonth(joinedAt: Date, month: number, year: number, now = new Date()) {
+  return !isFeeMonthBeforeStudentJoined(joinedAt, month, year) && isCurrentOrPastFeeMonth(month, year, now)
+}
+
+function currentOrPastFeeWhere(now = new Date()) {
+  const currentMonth = now.getMonth() + 1
+  const currentYear = now.getFullYear()
+
+  return {
+    OR: [
+      { year: { lt: currentYear } },
+      { year: currentYear, month: { lte: currentMonth } },
+    ],
+  }
+}
+
+function joinedMonthOrAfterWhere(joinedAt: Date) {
+  const joinMonth = joinedAt.getMonth() + 1
+  const joinYear = joinedAt.getFullYear()
+
+  return {
+    OR: [
+      { year: { gt: joinYear } },
+      { year: joinYear, month: { gte: joinMonth } },
+    ],
+  }
+}
+
+export async function syncStudentMonthlyFee(studentId: string, month: number, year: number) {
+  const student = await prisma.student.findUnique({
+    where: { id: studentId },
+    include: {
+      grade: { include: { subjects: true } },
+      payments: {
+        where: { month, year },
+      },
+    },
+  })
+
+  if (!student) return null
+  if (isFeeMonthBeforeStudentJoined(student.createdAt, month, year)) return null
+
+  const expectedAmount = student.grade.subjects.reduce((sum, subject) => sum + subject.fee, 0)
+
+  if (!isDetailedFeeEnabled()) {
+    const existing = await prisma.studentMonthlyFee.findUnique({
+      where: {
+        studentId_month_year: {
+          studentId,
+          month,
+          year,
+        },
+      },
+    })
+
+    const paidAmount = existing?.paidAmount ?? 0
+    const discount = existing?.discount ?? 0
+    const balance = Math.max(0, expectedAmount - paidAmount - discount)
+    const status = calcMonthlyStatus(balance, paidAmount)
+
+    return prisma.studentMonthlyFee.upsert({
+      where: {
+        studentId_month_year: {
+          studentId,
+          month,
+          year,
+        },
+      },
+      update: {
+        expectedAmount,
+        paidAmount,
+        discount,
+        balance,
+        status,
+      },
+      create: {
+        studentId,
+        month,
+        year,
+        expectedAmount,
+        paidAmount,
+        discount,
+        balance,
+        status,
+      },
+    })
+  }
+
+  const paidAmount = student.payments.reduce((sum, payment) => sum + payment.amountPaid, 0)
+  const discount = student.payments.reduce((sum, payment) => sum + payment.discount, 0)
+  const balance = Math.max(0, expectedAmount - paidAmount - discount)
+  const status = calcMonthlyStatus(balance, paidAmount)
+  const paidAt = student.payments.reduce<Date | null>((latest, payment) => {
+    if (!payment.paidAt) return latest
+    if (!latest || payment.paidAt > latest) return payment.paidAt
+    return latest
+  }, null)
+
+  return prisma.studentMonthlyFee.upsert({
+    where: {
+      studentId_month_year: {
+        studentId,
+        month,
+        year,
+      },
+    },
+    update: {
+      expectedAmount,
+      paidAmount,
+      discount,
+      balance,
+      status,
+      paidAt,
+    },
+    create: {
+      studentId,
+      month,
+      year,
+      expectedAmount,
+      paidAmount,
+      discount,
+      balance,
+      status,
+      paidAt,
+    },
+  })
+}
+
+export async function ensureMonthlyFees(month: number, year: number) {
+  if (isFutureFeeMonth(month, year)) return
+
+  const students = await prisma.student.findMany({
+    where: {
+      status: 'ACTIVE',
+      createdAt: { lt: getFeeMonthEnd(month, year) },
+    },
+    select: { id: true },
+  })
+
+  await Promise.all(
+    students.map((student) => syncStudentMonthlyFee(student.id, month, year))
+  )
+}
+
+// ─── #4  computePendingStudents — exported so dashboard.ts can reuse it ───────
+//
+// Uses DB groupBy + targeted queries instead of loading all students/rows into memory.
+//
+export type OverdueEntry = {
+  studentName: string
+  grade: string
+  month: number
+  year: number
+  balance: number
+}
+
+export async function computePendingStudents(now = new Date()): Promise<Map<string, OverdueEntry>> {
+  const currentMonth = now.getMonth() + 1
+  const currentYear = now.getFullYear()
+  const monthEnd = getFeeMonthEnd(currentMonth, currentYear)
+
+  // Step 1 — groupBy gives one row per studentId with summed unpaid balance
+  const unpaidGroups = await prisma.studentMonthlyFee.groupBy({
+    by: ['studentId'],
+    where: {
+      status: { not: PaymentStatus.PAID },
+      balance: { gt: 0 },
+      AND: [currentOrPastFeeWhere(now)],
+    },
+    _sum: { balance: true },
+  })
+  const unpaidBalanceMap = new Map<string, number>()
+  for (const g of unpaidGroups) {
+    unpaidBalanceMap.set(g.studentId, g._sum.balance ?? 0)
+  }
+
+  // Step 2 — active students with NO current-month row (pure pending)
+  const studentsWithCurrentRow = await prisma.studentMonthlyFee.findMany({
+    where: { month: currentMonth, year: currentYear },
+    select: { studentId: true },
+  })
+  const hasCurrentRow = new Set(studentsWithCurrentRow.map((r) => r.studentId))
+
+  const studentsWithoutRow = await prisma.student.findMany({
+    where: {
+      status: 'ACTIVE',
+      createdAt: { lt: monthEnd },
+      id: { notIn: [...hasCurrentRow] },
+    },
+    select: {
+      id: true,
+      name: true,
+      grade: { select: { name: true, subjects: { select: { fee: true } } } },
+    },
+  })
+
+  const overdueMap = new Map<string, OverdueEntry>()
+
+  // Add students with unpaid rows
+  if (unpaidBalanceMap.size > 0) {
+    const studentInfos = await prisma.student.findMany({
+      where: { id: { in: [...unpaidBalanceMap.keys()] } },
+      select: { id: true, name: true, grade: { select: { name: true } } },
+    })
+    for (const s of studentInfos) {
+      const balance = unpaidBalanceMap.get(s.id) ?? 0
+      if (balance > 0) {
+        overdueMap.set(s.id, { studentName: s.name, grade: s.grade.name, month: currentMonth, year: currentYear, balance })
+      }
+    }
+  }
+
+  // Add students with no current-month row
+  for (const s of studentsWithoutRow) {
+    const expectedFee = s.grade.subjects.reduce((sum, sub) => sum + sub.fee, 0)
+    if (expectedFee === 0) continue
+    const existing = overdueMap.get(s.id)
+    if (existing) {
+      existing.balance += expectedFee
+    } else {
+      overdueMap.set(s.id, { studentName: s.name, grade: s.grade.name, month: currentMonth, year: currentYear, balance: expectedFee })
+    }
+  }
+
+  return overdueMap
+}
+
+// ─── getFeeStats — used by /api/fees/stats ────────────────────────────────────
+
 export async function getFeeStats() {
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const weekStart = new Date(todayStart)
+  const weekStart  = new Date(todayStart)
   weekStart.setDate(weekStart.getDate() - 7)
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
 
-  const payments = await prisma.feePayment.findMany({
-    where: { paidAt: { not: null } },
-    include: { student: { include: { grade: true } }, subject: true },
-    orderBy: { paidAt: 'desc' },
-  })
+  // #4 shared helper — no more in-memory full scan
+  const overdueMap = await computePendingStudents(now)
 
-  const todayCollection = payments
-    .filter((p) => p.paidAt && p.paidAt >= todayStart)
-    .reduce((s, p) => s + p.amountPaid, 0)
+  if (!isDetailedFeeEnabled()) {
+    // #6 — aggregate sums instead of fetching all paid rows
+    const [todaySum, weeklySum, monthlySum, recentRaw] = await Promise.all([
+      prisma.studentMonthlyFee.aggregate({
+        where: { paidAt: { gte: todayStart } },
+        _sum: { paidAmount: true },
+      }),
+      prisma.studentMonthlyFee.aggregate({
+        where: { paidAt: { gte: weekStart } },
+        _sum: { paidAmount: true },
+      }),
+      prisma.studentMonthlyFee.aggregate({
+        where: { paidAt: { gte: monthStart } },
+        _sum: { paidAmount: true },
+      }),
+      prisma.studentMonthlyFee.findMany({
+        where: { paidAt: { gte: weekStart } },
+        select: {
+          month: true, year: true, paidAmount: true, paidAt: true,
+          student: { select: { name: true, createdAt: true, grade: { select: { name: true } } } },
+        },
+        orderBy: { paidAt: 'desc' },
+        take: 10,
+      }),
+    ])
 
-  const weeklyCollection = payments
-    .filter((p) => p.paidAt && p.paidAt >= weekStart)
-    .reduce((s, p) => s + p.amountPaid, 0)
+    return {
+      todayCollection:   todaySum._sum.paidAmount   ?? 0,
+      weeklyCollection:  weeklySum._sum.paidAmount  ?? 0,
+      monthlyCollection: monthlySum._sum.paidAmount ?? 0,
+      pendingFeeCount: overdueMap.size,
+      recentPayments: recentRaw
+        .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+        .map((p) => ({
+          studentName: p.student.name,
+          grade: p.student.grade.name,
+          month: p.month,
+          year: p.year,
+          amount: p.paidAmount,
+          paidAt: p.paidAt!.toISOString(),
+        })),
+      overdueStudents: [...overdueMap.values()].slice(0, 10),
+    }
+  }
 
-  const monthlyCollection = payments
-    .filter((p) => p.paidAt && p.paidAt >= monthStart)
-    .reduce((s, p) => s + p.amountPaid, 0)
+  // detailFee mode
+  const [todaySum, weeklySum, monthlySum, recentRaw] = await Promise.all([
+    prisma.feePayment.aggregate({
+      where: { paidAt: { gte: todayStart } },
+      _sum: { amountPaid: true },
+    }),
+    prisma.feePayment.aggregate({
+      where: { paidAt: { gte: weekStart } },
+      _sum: { amountPaid: true },
+    }),
+    prisma.feePayment.aggregate({
+      where: { paidAt: { gte: monthStart } },
+      _sum: { amountPaid: true },
+    }),
+    prisma.feePayment.findMany({
+      where: { paidAt: { gte: weekStart } },
+      select: {
+        studentId: true, month: true, year: true, amountPaid: true, paidAt: true,
+        student: { select: { name: true, createdAt: true, grade: { select: { name: true } } } },
+      },
+      orderBy: { paidAt: 'desc' },
+    }),
+  ])
 
-  const pending = await prisma.feePayment.findMany({
-    where: { status: { not: PaymentStatus.PAID } },
-    include: { student: { include: { grade: true } }, subject: true },
-  })
-
-  const pendingStudentIds = new Set(pending.map((p) => p.studentId))
+  const recentMap = new Map<string, { studentName: string; grade: string; month: number; year: number; amount: number; paidAt: Date }>()
+  for (const p of recentRaw) {
+    if (isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)) continue
+    const key = `${p.studentId}-${p.month}-${p.year}`
+    if (!recentMap.has(key)) {
+      recentMap.set(key, { studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, amount: 0, paidAt: p.paidAt! })
+    }
+    recentMap.get(key)!.amount += p.amountPaid
+    if (p.paidAt! > recentMap.get(key)!.paidAt) recentMap.get(key)!.paidAt = p.paidAt!
+  }
 
   return {
-    todayCollection,
-    weeklyCollection,
-    monthlyCollection,
-    pendingFeeCount: pendingStudentIds.size,
-    overdueStudents: pending.slice(0, 10).map((p) => ({
-      studentName: p.student.name,
-      grade: p.student.grade.name,
-      subject: p.subject.name,
-      balance: p.balance,
-    })),
-    recentPayments: payments.slice(0, 10).map((p) => ({
-      id: p.id,
-      studentName: p.student.name,
-      subject: p.subject.name,
-      amount: p.amountPaid,
-      paidAt: p.paidAt,
-    })),
+    todayCollection:   todaySum._sum.amountPaid   ?? 0,
+    weeklyCollection:  weeklySum._sum.amountPaid  ?? 0,
+    monthlyCollection: monthlySum._sum.amountPaid ?? 0,
+    pendingFeeCount: overdueMap.size,
+    recentPayments: [...recentMap.values()]
+      .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
+      .slice(0, 10)
+      .map((p) => ({ ...p, paidAt: p.paidAt.toISOString() })),
+    overdueStudents: [...overdueMap.values()].slice(0, 10),
   }
 }
 
 export async function listPayments(filters: PaymentFilters = {}) {
-  const { search, month, year, gradeId, subjectId } = filters
+  const { search, month, year, gradeId, status } = filters
 
-  return prisma.feePayment.findMany({
+  const now = new Date()
+  const selectedMonth = month ?? now.getMonth() + 1
+  const selectedYear = year ?? now.getFullYear()
+
+  // Guard: never show future months
+  if (isFutureFeeMonth(selectedMonth, selectedYear, now)) return []
+
+  // ── Step 1: fetch all eligible active students ──────────────────────────
+  // Eligible = joined before the end of the selected month
+  const monthEnd = getFeeMonthEnd(selectedMonth, selectedYear) // first day of next month
+  const students = await prisma.student.findMany({
     where: {
-      ...(month && { month }),
-      ...(year && { year }),
-      ...(subjectId && { subjectId }),
-      ...(gradeId && { student: { gradeId } }),
+      status: 'ACTIVE',
+      createdAt: { lt: monthEnd },
+      ...(gradeId && { gradeId }),
       ...(search && {
-        student: {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { parentName: { contains: search, mode: 'insensitive' } },
-          ],
-        },
+        OR: [
+          { studentId: { contains: search, mode: 'insensitive' } },
+          { name: { contains: search, mode: 'insensitive' } },
+          { parentName: { contains: search, mode: 'insensitive' } },
+          { parentContact: { contains: search, mode: 'insensitive' } },
+        ],
       }),
     },
     include: {
-      student: { include: { grade: true } },
-      subject: true,
+      grade: { include: { subjects: true } },
     },
-    orderBy: [{ year: 'desc' }, { month: 'desc' }, { updatedAt: 'desc' }],
+    orderBy: { name: 'asc' },
   })
+
+  if (students.length === 0) return []
+
+  // ── Step 2: fetch existing StudentMonthlyFee rows for this month ────────
+  const studentIds = students.map((s) => s.id)
+  const feeRows = await prisma.studentMonthlyFee.findMany({
+    where: {
+      studentId: { in: studentIds },
+      month: selectedMonth,
+      year: selectedYear,
+    },
+  })
+  const feeRowMap = new Map(feeRows.map((r) => [r.studentId, r]))
+
+  // ── Step 3: merge — compute status for students with no row ────────────
+  const rows = students.map((student) => {
+    const expectedAmount = student.grade.subjects.reduce((sum, sub) => sum + sub.fee, 0)
+    const row = feeRowMap.get(student.id)
+
+    const amountPaid  = row?.paidAmount ?? 0
+    const discount    = row?.discount   ?? 0
+    const balance     = row?.balance    ?? Math.max(0, expectedAmount - amountPaid - discount)
+    const rowStatus   = row?.status     ?? PaymentStatus.PENDING
+    const paidAt      = row?.paidAt     ?? null
+
+    return {
+      key: `${student.id}-${selectedMonth}-${selectedYear}`,
+      studentId: student.id,
+      studentName: student.name,
+      grade: student.grade.name,
+      month: selectedMonth,
+      year: selectedYear,
+      expectedAmount,
+      amountPaid,
+      paidAmount: amountPaid,
+      discount,
+      balance,
+      status: rowStatus,
+      paidAt: paidAt?.toISOString() ?? null,
+    }
+  })
+
+  // ── Step 4: apply status filter AFTER computing derived status ──────────
+  if (status) return rows.filter((r) => r.status === status)
+  return rows
 }
 
 export async function getStudentFeePreview(studentId: string, month: number, year: number) {
+  if (!isDetailedFeeEnabled()) {
+    const student = await prisma.student.findUnique({
+      where: { id: studentId },
+      include: {
+        grade: { include: { subjects: true } },
+      },
+    })
+
+    if (!student) return null
+
+    const totalFee = student.grade.subjects.reduce((s, sub) => s + sub.fee, 0)
+    if (isFeeMonthBeforeStudentJoined(student.createdAt, month, year)) {
+      return {
+        student,
+        totalFee: 0,
+        totalPreviouslyPaid: 0,
+        totalDiscount: 0,
+        previousDue: 0,
+        carryover: 0,
+        totalDue: 0,
+      }
+    }
+
+    const monthlyFee = await prisma.studentMonthlyFee.findUnique({
+      where: {
+        studentId_month_year: {
+          studentId,
+          month,
+          year,
+        },
+      },
+    })
+
+    const totalPreviouslyPaid = monthlyFee?.paidAmount ?? 0
+    const totalDiscount = monthlyFee?.discount ?? 0
+    const currentMonthBalance = monthlyFee?.balance ?? Math.max(0, totalFee - totalDiscount)
+
+    const priorUnpaid = await prisma.studentMonthlyFee.aggregate({
+      where: {
+        studentId,
+        status: { not: PaymentStatus.PAID },
+        AND: [
+          joinedMonthOrAfterWhere(student.createdAt),
+          {
+            OR: [
+              { year: { lt: year } },
+              { year, month: { lt: month } },
+            ],
+          },
+        ],
+      },
+      _sum: { balance: true },
+    })
+    const carryover = priorUnpaid._sum.balance ?? 0
+
+    return {
+      student,
+      totalFee,
+      totalPreviouslyPaid,
+      totalDiscount,
+      previousDue: currentMonthBalance,
+      carryover,
+      totalDue: currentMonthBalance + carryover,
+    }
+  }
+
   const student = await prisma.student.findUnique({
     where: { id: studentId },
     include: {
-      grade: true,
-      subjects: { include: { subject: true } },
+      grade: { include: { subjects: true } },
       payments: {
         where: { month, year },
         include: { subject: true },
@@ -131,35 +559,55 @@ export async function getStudentFeePreview(studentId: string, month: number, yea
 
   if (!student) return null
 
-  const subjects = student.subjects.map(({ subject }) => {
-    const existing = student.payments.find((p) => p.subjectId === subject.id)
+  const gradeSubjects = student.grade.subjects
+  const totalFee = gradeSubjects.reduce((s, sub) => s + sub.fee, 0)
+  if (isFeeMonthBeforeStudentJoined(student.createdAt, month, year)) {
     return {
-      subjectId: subject.id,
-      subjectName: subject.name,
-      fee: subject.fee,
-      amountDue: existing?.amountDue ?? subject.fee,
-      amountPaid: existing?.amountPaid ?? 0,
-      discount: existing?.discount ?? 0,
-      balance: existing?.balance ?? subject.fee,
-      paymentId: existing?.id,
+      student,
+      totalFee: 0,
+      totalPreviouslyPaid: 0,
+      totalDiscount: 0,
+      previousDue: 0,
+      carryover: 0,
+      totalDue: 0,
     }
-  })
+  }
 
-  // Aggregate totals
-  const totalFee = subjects.reduce((s, sub) => s + sub.fee, 0)
-  const totalPreviouslyPaid = subjects.reduce((s, sub) => s + sub.amountPaid, 0)
-  const totalDiscount = subjects.reduce((s, sub) => s + sub.discount, 0)
-  const previousDue = subjects.reduce((s, sub) => s + sub.balance, 0)
+  const totalPreviouslyPaid = student.payments.reduce((s, p) => s + p.amountPaid, 0)
+  const totalDiscount = student.payments.reduce((s, p) => s + p.discount, 0)
+
+  // Current month balance
+  const currentMonthBalance = student.payments.length
+    ? student.payments.reduce((s, p) => s + p.balance, 0)
+    : totalFee - totalDiscount
+
+  // Carryover: sum of unpaid balances from ALL prior months
+  const priorUnpaid = await prisma.feePayment.aggregate({
+    where: {
+      studentId,
+      status: { not: PaymentStatus.PAID },
+      AND: [
+        joinedMonthOrAfterWhere(student.createdAt),
+        {
+          OR: [
+            { year: { lt: year } },
+            { year, month: { lt: month } },
+          ],
+        },
+      ],
+    },
+    _sum: { balance: true },
+  })
+  const carryover = priorUnpaid._sum.balance ?? 0
 
   return {
     student,
-    subjects,
     totalFee,
     totalPreviouslyPaid,
     totalDiscount,
-    previousDue,
-    /** @deprecated use previousDue */
-    totalDue: previousDue,
+    previousDue: currentMonthBalance,
+    carryover,
+    totalDue: currentMonthBalance + carryover,
   }
 }
 
@@ -174,24 +622,95 @@ export async function recordBulkPayment(data: BulkPaymentInput) {
   const student = await prisma.student.findUnique({
     where: { id: studentId },
     include: {
-      subjects: { include: { subject: true } },
+      grade: { include: { subjects: true } },
       payments: { where: { month, year } },
     },
   })
   if (!student) throw new Error('Student not found')
-  if (!student.subjects.length) throw new Error('Student has no enrolled subjects')
+  if (isFeeMonthBeforeStudentJoined(student.createdAt, month, year)) {
+    throw new Error('Student was not enrolled for this fee month')
+  }
 
-  const totalFee = student.subjects.reduce((s, ss) => s + ss.subject.fee, 0)
+  const gradeSubjects = student.grade.subjects
+  if (!gradeSubjects.length) throw new Error('No subjects found for this grade')
+
+  const totalFee = gradeSubjects.reduce((s, sub) => s + sub.fee, 0)
 
   // Clamp discount to totalFee
   const safeDiscount = Math.min(discount, totalFee)
 
+  if (!isDetailedFeeEnabled()) {
+    const existing = await prisma.studentMonthlyFee.findUnique({
+      where: {
+        studentId_month_year: {
+          studentId,
+          month,
+          year,
+        },
+      },
+    })
+
+    const priorPaid = existing?.paidAmount ?? 0
+    const priorDiscount = existing?.discount ?? 0
+    const totalDiscount = priorPaid > 0 || priorDiscount > 0 ? priorDiscount : safeDiscount
+    const currentBalance = existing?.balance ?? Math.max(0, totalFee - totalDiscount)
+    const effectivePaid = isFullPayment
+      ? currentBalance
+      : Math.min(amountPaid, currentBalance)
+    const paidAmount = priorPaid + effectivePaid
+    const balance = Math.max(0, totalFee - paidAmount - totalDiscount)
+    const status = calcMonthlyStatus(balance, paidAmount)
+    const paidAt = effectivePaid > 0 ? new Date() : (existing?.paidAt ?? null)
+
+    await prisma.studentMonthlyFee.upsert({
+      where: {
+        studentId_month_year: {
+          studentId,
+          month,
+          year,
+        },
+      },
+      update: {
+        expectedAmount: totalFee,
+        paidAmount,
+        discount: totalDiscount,
+        balance,
+        status,
+        paidAt,
+      },
+      create: {
+        studentId,
+        month,
+        year,
+        expectedAmount: totalFee,
+        paidAmount,
+        discount: totalDiscount,
+        balance,
+        status,
+        paidAt,
+      },
+    })
+
+    return {
+      payments: [],
+      summary: {
+        totalFee,
+        discount: totalDiscount,
+        netPayable: currentBalance,
+        amountPaid: effectivePaid,
+        dueAmount: balance,
+        totalAmountPaid: paidAmount,
+        status,
+      },
+    }
+  }
+
   // For each subject, the current balance already accounts for prior payments and discounts.
   // "Remaining due" = sum of existing balances (or full fee if no prior payment).
   // We apply the new discount only against subjects that haven't had a discount yet.
-  const subjectData = student.subjects.map(({ subject }) => {
+  const subjectData = gradeSubjects.map((subject) => {
     const existing = student.payments.find((p) => p.subjectId === subject.id)
-    const subjectRatio = totalFee > 0 ? subject.fee / totalFee : 1 / student.subjects.length
+    const subjectRatio = totalFee > 0 ? subject.fee / totalFee : 1 / gradeSubjects.length
     // Only apply discount if not already discounted (i.e. no prior payment record)
     const subDiscount = existing ? (existing.discount) : Math.round(safeDiscount * subjectRatio)
     const priorPaid = existing?.amountPaid ?? 0
@@ -260,6 +779,8 @@ export async function recordBulkPayment(data: BulkPaymentInput) {
   const totalBalance = results.reduce((s, r) => s + r.balance, 0)
   const totalAmountPaid = results.reduce((s, r) => s + r.amountPaid, 0)
 
+  await syncStudentMonthlyFee(studentId, month, year)
+
   return {
     payments: results,
     summary: {
@@ -278,6 +799,15 @@ export async function recordBulkPayment(data: BulkPaymentInput) {
 export async function recordPayment(data: PaymentInput) {
   const subject = await prisma.subject.findUnique({ where: { id: data.subjectId } })
   if (!subject) throw new Error('Subject not found')
+
+  const student = await prisma.student.findUnique({
+    where: { id: data.studentId },
+    select: { createdAt: true },
+  })
+  if (!student) throw new Error('Student not found')
+  if (isFeeMonthBeforeStudentJoined(student.createdAt, data.month, data.year)) {
+    throw new Error('Student was not enrolled for this fee month')
+  }
 
   const existing = await prisma.feePayment.findFirst({
     where: {
@@ -305,14 +835,16 @@ export async function recordPayment(data: PaymentInput) {
   }
 
   if (existing) {
-    return prisma.feePayment.update({
+    const updated = await prisma.feePayment.update({
       where: { id: existing.id },
       data: payload,
       include: { student: true, subject: true },
     })
+    await syncStudentMonthlyFee(data.studentId, data.month, data.year)
+    return updated
   }
-
-  return prisma.feePayment.create({
+  
+  const created = await prisma.feePayment.create({
     data: {
       studentId: data.studentId,
       subjectId: data.subjectId,
@@ -322,6 +854,9 @@ export async function recordPayment(data: PaymentInput) {
     },
     include: { student: true, subject: true },
   })
+
+  await syncStudentMonthlyFee(data.studentId, data.month, data.year)
+  return created
 }
 
 export async function getPaymentById(id: string) {

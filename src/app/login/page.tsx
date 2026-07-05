@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/Button'
 import { GraduationCap } from 'lucide-react'
 import { useState } from 'react'
 
+const DEFAULT_EMAIL_DOMAIN = '@vtc.com'
+
 const schema = z.object({
-  email: z.string().email('Enter a valid email'),
+  email: z.string().trim().email('Enter a valid email'),
   password: z.string().min(1, 'Password is required'),
 })
 
@@ -30,7 +32,10 @@ export default function LoginPage() {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: JSON.stringify({
+        email: data.email.trim().toLowerCase(),
+        password: data.password,
+      }),
     })
     const json = await res.json()
     if (!res.ok) {
@@ -59,8 +64,9 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <Input
               label="Email"
-              type="email"
-              placeholder="you@school.com"
+              type="text"
+              inputMode="email"
+              placeholder="username@vtc.com"
               error={errors.email?.message}
               {...register('email')}
             />

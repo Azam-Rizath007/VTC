@@ -147,7 +147,14 @@ export function StudentForm({ open, onClose, onSuccess, initial }: StudentFormPr
           </div>
 
           <Input label="Parent / Guardian Name" placeholder="Optional" {...register('parentName')} />
-          <Input label="Parent Contact" placeholder="0300-0000000" {...register('parentContact')} />
+          <Input
+            label="Parent Contact"
+            placeholder="10 digits max"
+            inputMode="numeric"
+            maxLength={10}
+            error={errors.parentContact?.message}
+            {...register('parentContact')}
+          />
           <Textarea label="Notes" rows={3} placeholder="Optional notes" {...register('notes')} />
 
           {initial?.id && (

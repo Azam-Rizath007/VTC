@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   const month = Number(req.nextUrl.searchParams.get('month'))
   const year = Number(req.nextUrl.searchParams.get('year'))
 
-  if (!studentId || !month || !year) {
+  if (!studentId || !Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year) || year < 2020) {
     return NextResponse.json({ error: 'studentId, month, and year required' }, { status: 400 })
   }
 

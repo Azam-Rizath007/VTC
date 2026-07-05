@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Role } from '@/generated/prisma'
+import { Role, StudentStatus } from '@/generated/prisma'
 import { isAuthUser, requireAuth } from '@/lib/api-auth'
 import { createStudent, listStudents } from '@/lib/services/students'
 import { studentSchema } from '@/lib/validations/student'
@@ -11,11 +11,16 @@ export async function GET(req: NextRequest) {
   if (!isAuthUser(auth)) return auth
 
   const { searchParams } = req.nextUrl
+  const status = searchParams.get('status')
+  if (status && !Object.values(StudentStatus).includes(status as StudentStatus)) {
+    return NextResponse.json({ error: 'Invalid student status' }, { status: 400 })
+  }
+
   const students = await listStudents({
     search: searchParams.get('search') || undefined,
     gradeId: searchParams.get('gradeId') || undefined,
     subjectId: searchParams.get('subjectId') || undefined,
-    status: (searchParams.get('status') as 'ACTIVE' | 'INACTIVE') || undefined,
+    status: (status as StudentStatus) || undefined,
   })
 
   return NextResponse.json({ students })
