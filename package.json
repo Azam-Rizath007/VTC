@@ -18,6 +18,8 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.21.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@supabase/supabase-js": "^2.105.4",
@@ -48,11 +50,9 @@
     "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "ts-node": "^10.9.2",
-    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
