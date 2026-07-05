@@ -20,6 +20,12 @@
     "@hookform/resolvers": "^5.2.2",
     "dotenv": "^17.4.2",
     "tsx": "^4.21.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@supabase/supabase-js": "^2.105.4",
@@ -44,15 +50,9 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^20",
     "@types/pg": "^8.20.0",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
-    "ts-node": "^10.9.2",
-    "typescript": "^5"
+    "ts-node": "^10.9.2"
   }
 }
