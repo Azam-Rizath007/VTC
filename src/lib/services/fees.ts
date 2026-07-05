@@ -212,93 +212,173 @@ export async function ensureMonthlyFees(month: number, year: number) {
   )
 }
 
+// ─── #4  computePendingStudents — exported so dashboard.ts can reuse it ───────
+//
+// Uses DB groupBy + targeted queries instead of loading all students/rows into memory.
+//
+export type OverdueEntry = {
+  studentName: string
+  grade: string
+  month: number
+  year: number
+  balance: number
+}
+
+export async function computePendingStudents(now = new Date()): Promise<Map<string, OverdueEntry>> {
+  const currentMonth = now.getMonth() + 1
+  const currentYear = now.getFullYear()
+  const monthEnd = getFeeMonthEnd(currentMonth, currentYear)
+
+  // Step 1 — groupBy gives one row per studentId with summed unpaid balance
+  const unpaidGroups = await prisma.studentMonthlyFee.groupBy({
+    by: ['studentId'],
+    where: {
+      status: { not: PaymentStatus.PAID },
+      balance: { gt: 0 },
+      AND: [currentOrPastFeeWhere(now)],
+    },
+    _sum: { balance: true },
+  })
+  const unpaidBalanceMap = new Map<string, number>()
+  for (const g of unpaidGroups) {
+    unpaidBalanceMap.set(g.studentId, g._sum.balance ?? 0)
+  }
+
+  // Step 2 — active students with NO current-month row (pure pending)
+  const studentsWithCurrentRow = await prisma.studentMonthlyFee.findMany({
+    where: { month: currentMonth, year: currentYear },
+    select: { studentId: true },
+  })
+  const hasCurrentRow = new Set(studentsWithCurrentRow.map((r) => r.studentId))
+
+  const studentsWithoutRow = await prisma.student.findMany({
+    where: {
+      status: 'ACTIVE',
+      createdAt: { lt: monthEnd },
+      id: { notIn: [...hasCurrentRow] },
+    },
+    select: {
+      id: true,
+      name: true,
+      grade: { select: { name: true, subjects: { select: { fee: true } } } },
+    },
+  })
+
+  const overdueMap = new Map<string, OverdueEntry>()
+
+  // Add students with unpaid rows
+  if (unpaidBalanceMap.size > 0) {
+    const studentInfos = await prisma.student.findMany({
+      where: { id: { in: [...unpaidBalanceMap.keys()] } },
+      select: { id: true, name: true, grade: { select: { name: true } } },
+    })
+    for (const s of studentInfos) {
+      const balance = unpaidBalanceMap.get(s.id) ?? 0
+      if (balance > 0) {
+        overdueMap.set(s.id, { studentName: s.name, grade: s.grade.name, month: currentMonth, year: currentYear, balance })
+      }
+    }
+  }
+
+  // Add students with no current-month row
+  for (const s of studentsWithoutRow) {
+    const expectedFee = s.grade.subjects.reduce((sum, sub) => sum + sub.fee, 0)
+    if (expectedFee === 0) continue
+    const existing = overdueMap.get(s.id)
+    if (existing) {
+      existing.balance += expectedFee
+    } else {
+      overdueMap.set(s.id, { studentName: s.name, grade: s.grade.name, month: currentMonth, year: currentYear, balance: expectedFee })
+    }
+  }
+
+  return overdueMap
+}
+
+// ─── getFeeStats — used by /api/fees/stats ────────────────────────────────────
+
 export async function getFeeStats() {
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const weekStart = new Date(todayStart)
+  const weekStart  = new Date(todayStart)
   weekStart.setDate(weekStart.getDate() - 7)
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
 
+  // #4 shared helper — no more in-memory full scan
+  const overdueMap = await computePendingStudents(now)
+
   if (!isDetailedFeeEnabled()) {
-    const allPaid = await prisma.studentMonthlyFee.findMany({
-      where: { paidAt: { not: null } },
-      include: { student: { include: { grade: true } } },
-      orderBy: { paidAt: 'desc' },
-    })
-    const validPaid = allPaid.filter(
-      (p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)
-    )
+    // #6 — aggregate sums instead of fetching all paid rows
+    const [todaySum, weeklySum, monthlySum, recentRaw] = await Promise.all([
+      prisma.studentMonthlyFee.aggregate({
+        where: { paidAt: { gte: todayStart } },
+        _sum: { paidAmount: true },
+      }),
+      prisma.studentMonthlyFee.aggregate({
+        where: { paidAt: { gte: weekStart } },
+        _sum: { paidAmount: true },
+      }),
+      prisma.studentMonthlyFee.aggregate({
+        where: { paidAt: { gte: monthStart } },
+        _sum: { paidAmount: true },
+      }),
+      prisma.studentMonthlyFee.findMany({
+        where: { paidAt: { gte: weekStart } },
+        select: {
+          month: true, year: true, paidAmount: true, paidAt: true,
+          student: { select: { name: true, createdAt: true, grade: { select: { name: true } } } },
+        },
+        orderBy: { paidAt: 'desc' },
+        take: 10,
+      }),
+    ])
 
-    const todayCollection = validPaid.filter((p) => p.paidAt! >= todayStart).reduce((s, p) => s + p.paidAmount, 0)
-    const weeklyCollection = validPaid.filter((p) => p.paidAt! >= weekStart).reduce((s, p) => s + p.paidAmount, 0)
-    const monthlyCollection = validPaid.filter((p) => p.paidAt! >= monthStart).reduce((s, p) => s + p.paidAmount, 0)
-
-    const recentPayments = validPaid
-      .filter((p) => p.paidAt! >= weekStart)
-      .slice(0, 10)
-      .map((p) => ({
-        studentName: p.student.name,
-        grade: p.student.grade.name,
-        month: p.month,
-        year: p.year,
-        amount: p.paidAmount,
-        paidAt: p.paidAt!.toISOString(),
-      }))
-
-    const overdueRaw = await prisma.studentMonthlyFee.findMany({
-      where: {
-        status: { not: PaymentStatus.PAID },
-        balance: { gt: 0 },
-        AND: [currentOrPastFeeWhere(now)],
-      },
-      include: { student: { include: { grade: true } } },
-      orderBy: [{ year: 'asc' }, { month: 'asc' }],
-    })
-
-    const overdueMap = new Map<string, { studentName: string; grade: string; month: number; year: number; balance: number }>()
-    for (const p of overdueRaw) {
-      if (isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)) continue
-      const existing = overdueMap.get(p.studentId)
-      if (existing) {
-        existing.balance += p.balance
-      } else {
-        overdueMap.set(p.studentId, {
+    return {
+      todayCollection:   todaySum._sum.paidAmount   ?? 0,
+      weeklyCollection:  weeklySum._sum.paidAmount  ?? 0,
+      monthlyCollection: monthlySum._sum.paidAmount ?? 0,
+      pendingFeeCount: overdueMap.size,
+      recentPayments: recentRaw
+        .filter((p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year))
+        .map((p) => ({
           studentName: p.student.name,
           grade: p.student.grade.name,
           month: p.month,
           year: p.year,
-          balance: p.balance,
-        })
-      }
-    }
-
-    return {
-      todayCollection,
-      weeklyCollection,
-      monthlyCollection,
-      pendingFeeCount: overdueMap.size,
-      recentPayments,
+          amount: p.paidAmount,
+          paidAt: p.paidAt!.toISOString(),
+        })),
       overdueStudents: [...overdueMap.values()].slice(0, 10),
     }
   }
 
-  const allPaid = await prisma.feePayment.findMany({
-    where: { paidAt: { not: null } },
-    include: { student: { include: { grade: true } } },
-    orderBy: { paidAt: 'desc' },
-  })
-  const validPaid = allPaid.filter(
-    (p) => !isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)
-  )
+  // detailFee mode
+  const [todaySum, weeklySum, monthlySum, recentRaw] = await Promise.all([
+    prisma.feePayment.aggregate({
+      where: { paidAt: { gte: todayStart } },
+      _sum: { amountPaid: true },
+    }),
+    prisma.feePayment.aggregate({
+      where: { paidAt: { gte: weekStart } },
+      _sum: { amountPaid: true },
+    }),
+    prisma.feePayment.aggregate({
+      where: { paidAt: { gte: monthStart } },
+      _sum: { amountPaid: true },
+    }),
+    prisma.feePayment.findMany({
+      where: { paidAt: { gte: weekStart } },
+      select: {
+        studentId: true, month: true, year: true, amountPaid: true, paidAt: true,
+        student: { select: { name: true, createdAt: true, grade: { select: { name: true } } } },
+      },
+      orderBy: { paidAt: 'desc' },
+    }),
+  ])
 
-  const todayCollection = validPaid.filter((p) => p.paidAt! >= todayStart).reduce((s, p) => s + p.amountPaid, 0)
-  const weeklyCollection = validPaid.filter((p) => p.paidAt! >= weekStart).reduce((s, p) => s + p.amountPaid, 0)
-  const monthlyCollection = validPaid.filter((p) => p.paidAt! >= monthStart).reduce((s, p) => s + p.amountPaid, 0)
-
-  // Recent payments (last 7 days): aggregate by student+month+year
-  const recentRaw = validPaid.filter((p) => p.paidAt! >= weekStart)
   const recentMap = new Map<string, { studentName: string; grade: string; month: number; year: number; amount: number; paidAt: Date }>()
   for (const p of recentRaw) {
+    if (isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)) continue
     const key = `${p.studentId}-${p.month}-${p.year}`
     if (!recentMap.has(key)) {
       recentMap.set(key, { studentName: p.student.name, grade: p.student.grade.name, month: p.month, year: p.year, amount: 0, paidAt: p.paidAt! })
@@ -306,46 +386,17 @@ export async function getFeeStats() {
     recentMap.get(key)!.amount += p.amountPaid
     if (p.paidAt! > recentMap.get(key)!.paidAt) recentMap.get(key)!.paidAt = p.paidAt!
   }
-  const recentPayments = [...recentMap.values()]
-    .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
-    .slice(0, 10)
-    .map((p) => ({ ...p, paidAt: p.paidAt.toISOString() }))
-
-  // Overdue: ALL unpaid balances, aggregated by student.
-  const overdueRaw = await prisma.feePayment.findMany({
-    where: {
-      status: { not: PaymentStatus.PAID },
-      balance: { gt: 0 },
-      AND: [currentOrPastFeeWhere(now)],
-    },
-    include: { student: { include: { grade: true } } },
-    orderBy: [{ year: 'asc' }, { month: 'asc' }],
-  })
-  const overdueMap = new Map<string, { studentName: string; grade: string; month: number; year: number; balance: number }>()
-  for (const p of overdueRaw) {
-    if (isFeeMonthBeforeStudentJoined(p.student.createdAt, p.month, p.year)) continue
-    const existing = overdueMap.get(p.studentId)
-    if (existing) {
-      existing.balance += p.balance
-    } else {
-      overdueMap.set(p.studentId, {
-        studentName: p.student.name,
-        grade: p.student.grade.name,
-        month: p.month,
-        year: p.year,
-        balance: p.balance,
-      })
-    }
-  }
-  const overdueStudents = [...overdueMap.values()].slice(0, 10)
 
   return {
-    todayCollection,
-    weeklyCollection,
-    monthlyCollection,
+    todayCollection:   todaySum._sum.amountPaid   ?? 0,
+    weeklyCollection:  weeklySum._sum.amountPaid  ?? 0,
+    monthlyCollection: monthlySum._sum.amountPaid ?? 0,
     pendingFeeCount: overdueMap.size,
-    recentPayments,
-    overdueStudents,
+    recentPayments: [...recentMap.values()]
+      .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
+      .slice(0, 10)
+      .map((p) => ({ ...p, paidAt: p.paidAt.toISOString() })),
+    overdueStudents: [...overdueMap.values()].slice(0, 10),
   }
 }
 
@@ -356,51 +407,76 @@ export async function listPayments(filters: PaymentFilters = {}) {
   const selectedMonth = month ?? now.getMonth() + 1
   const selectedYear = year ?? now.getFullYear()
 
-  const rows = await prisma.studentMonthlyFee.findMany({
+  // Guard: never show future months
+  if (isFutureFeeMonth(selectedMonth, selectedYear, now)) return []
+
+  // ── Step 1: fetch all eligible active students ──────────────────────────
+  // Eligible = joined before the end of the selected month
+  const monthEnd = getFeeMonthEnd(selectedMonth, selectedYear) // first day of next month
+  const students = await prisma.student.findMany({
     where: {
-      month: selectedMonth,
-      year: selectedYear,
-      ...(status && { status }),
-      student: {
-        createdAt: { lt: getFeeMonthEnd(selectedMonth, selectedYear) },
-        ...(gradeId && { gradeId }),
-        ...(search && {
-          OR: [
-            { studentId: { contains: search, mode: 'insensitive' } },
-            { name: { contains: search, mode: 'insensitive' } },
-            { parentName: { contains: search, mode: 'insensitive' } },
-            { parentContact: { contains: search, mode: 'insensitive' } },
-          ],
-        }),
-      },
+      status: 'ACTIVE',
+      createdAt: { lt: monthEnd },
+      ...(gradeId && { gradeId }),
+      ...(search && {
+        OR: [
+          { studentId: { contains: search, mode: 'insensitive' } },
+          { name: { contains: search, mode: 'insensitive' } },
+          { parentName: { contains: search, mode: 'insensitive' } },
+          { parentContact: { contains: search, mode: 'insensitive' } },
+        ],
+      }),
     },
     include: {
-      student: {
-        include: {
-          grade: true,
-        },
-      },
+      grade: { include: { subjects: true } },
     },
-    orderBy: {
-      updatedAt: 'desc',
-    },
+    orderBy: { name: 'asc' },
   })
 
-  return rows.map((row) => ({
-    key: `${row.studentId}-${row.month}-${row.year}`,
-    studentId: row.studentId,
-    studentName: row.student.name,
-    grade: row.student.grade.name,
-    month: row.month,
-    year: row.year,
-    expectedAmount: row.expectedAmount,
-    amountPaid: row.paidAmount,
-    paidAmount: row.paidAmount,
-    discount: row.discount,
-    balance: row.balance,
-    status: row.status,
-    paidAt: row.paidAt?.toISOString() ?? null,
-  }))
+  if (students.length === 0) return []
+
+  // ── Step 2: fetch existing StudentMonthlyFee rows for this month ────────
+  const studentIds = students.map((s) => s.id)
+  const feeRows = await prisma.studentMonthlyFee.findMany({
+    where: {
+      studentId: { in: studentIds },
+      month: selectedMonth,
+      year: selectedYear,
+    },
+  })
+  const feeRowMap = new Map(feeRows.map((r) => [r.studentId, r]))
+
+  // ── Step 3: merge — compute status for students with no row ────────────
+  const rows = students.map((student) => {
+    const expectedAmount = student.grade.subjects.reduce((sum, sub) => sum + sub.fee, 0)
+    const row = feeRowMap.get(student.id)
+
+    const amountPaid  = row?.paidAmount ?? 0
+    const discount    = row?.discount   ?? 0
+    const balance     = row?.balance    ?? Math.max(0, expectedAmount - amountPaid - discount)
+    const rowStatus   = row?.status     ?? PaymentStatus.PENDING
+    const paidAt      = row?.paidAt     ?? null
+
+    return {
+      key: `${student.id}-${selectedMonth}-${selectedYear}`,
+      studentId: student.id,
+      studentName: student.name,
+      grade: student.grade.name,
+      month: selectedMonth,
+      year: selectedYear,
+      expectedAmount,
+      amountPaid,
+      paidAmount: amountPaid,
+      discount,
+      balance,
+      status: rowStatus,
+      paidAt: paidAt?.toISOString() ?? null,
+    }
+  })
+
+  // ── Step 4: apply status filter AFTER computing derived status ──────────
+  if (status) return rows.filter((r) => r.status === status)
+  return rows
 }
 
 export async function getStudentFeePreview(studentId: string, month: number, year: number) {

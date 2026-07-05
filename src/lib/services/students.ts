@@ -6,6 +6,27 @@ const STUDENT_ID_PREFIX = 'VTC'
 const STUDENT_ID_START = 1531
 const MAX_STUDENT_ID_ATTEMPTS = 5
 
+/**
+ * Returns every (month, year) pair from the student's join month up to and
+ * including the current month. Used to detect months with no fee row at all.
+ */
+function getAllEligibleMonths(joinedAt: Date, now: Date): { month: number; year: number }[] {
+  const result: { month: number; year: number }[] = []
+  const startMonth = joinedAt.getMonth() + 1
+  const startYear = joinedAt.getFullYear()
+  const endMonth = now.getMonth() + 1
+  const endYear = now.getFullYear()
+
+  let m = startMonth
+  let y = startYear
+  while (y < endYear || (y === endYear && m <= endMonth)) {
+    result.push({ month: m, year: y })
+    m++
+    if (m > 12) { m = 1; y++ }
+  }
+  return result
+}
+
 export interface StudentFilters {
   search?: string
   gradeId?: string
@@ -108,39 +129,68 @@ export async function getStudentById(id: string) {
   const year = now.getFullYear()
   const detailFeeEnabled = isDetailedFeeEnabled()
 
-  const student = await prisma.student.findUnique({
-    where: { id },
-    include: {
-      grade: true,
-      subjects: { include: { subject: true } },
-      payments: {
-        include: { subject: true },
-        orderBy: [{ year: 'desc' }, { month: 'desc' }, { createdAt: 'desc' }],
+  // #5 — fetch attendance summary via groupBy instead of loading every row,
+  // run in parallel with the student query
+  const [student, attendanceGroups] = await Promise.all([
+    prisma.student.findUnique({
+      where: { id },
+      include: {
+        grade: { include: { subjects: true } },
+        subjects: { include: { subject: true } },
+        payments: {
+          include: { subject: true },
+          orderBy: [{ year: 'desc' }, { month: 'desc' }, { createdAt: 'desc' }],
+        },
+        monthlyFees: {
+          orderBy: [{ year: 'desc' }, { month: 'desc' }, { updatedAt: 'desc' }],
+        },
       },
-      monthlyFees: {
-        orderBy: [{ year: 'desc' }, { month: 'desc' }, { updatedAt: 'desc' }],
-      },
-      attendances: {
-        include: { subject: true },
-        orderBy: { date: 'desc' },
-      },
-    },
-  })
+    }),
+    // One groupBy query → present/absent counts per subject, no row-level data needed
+    prisma.attendance.groupBy({
+      by: ['subjectId', 'status'],
+      where: { studentId: id },
+      _count: { id: true },
+    }),
+  ])
 
   if (!student) return null
 
-  const attendanceSummary = student.attendances.reduce<
-    Record<string, { subject: string; present: number; absent: number; total: number }>
-  >((acc, row) => {
-    const key = row.subjectId
-    if (!acc[key]) {
-      acc[key] = { subject: row.subject.name, present: 0, absent: 0, total: 0 }
+  // Build the subject-name lookup from the student's enrolled subjects
+  const subjectNameMap = new Map(student.subjects.map((s) => [s.subjectId, s.subject.name]))
+
+  // Also fetch subject names for any subjectIds not covered by enrolled subjects
+  // (e.g. subjects the student was removed from but still has attendance records)
+  const knownSubjectIds = new Set(subjectNameMap.keys())
+  const unknownSubjectIds = [...new Set(attendanceGroups.map((g) => g.subjectId))].filter(
+    (sid) => !knownSubjectIds.has(sid)
+  )
+  if (unknownSubjectIds.length > 0) {
+    const extraSubjects = await prisma.subject.findMany({
+      where: { id: { in: unknownSubjectIds } },
+      select: { id: true, name: true },
+    })
+    for (const s of extraSubjects) subjectNameMap.set(s.id, s.name)
+  }
+
+  // Aggregate groupBy rows into { present, absent, total } per subject
+  const attendanceSummaryMap = new Map<string, { subject: string; present: number; absent: number; total: number }>()
+  for (const g of attendanceGroups) {
+    if (!attendanceSummaryMap.has(g.subjectId)) {
+      attendanceSummaryMap.set(g.subjectId, {
+        subject: subjectNameMap.get(g.subjectId) ?? g.subjectId,
+        present: 0,
+        absent: 0,
+        total: 0,
+      })
     }
-    acc[key].total += 1
-    if (row.status === 'PRESENT') acc[key].present += 1
-    else acc[key].absent += 1
-    return acc
-  }, {})
+    const entry = attendanceSummaryMap.get(g.subjectId)!
+    const count = g._count.id
+    entry.total += count
+    if (g.status === 'PRESENT') entry.present += count
+    else entry.absent += count
+  }
+  const attendanceSummary = [...attendanceSummaryMap.values()]
 
   let pendingBalance = 0
   let feeStatus: FeeStatusRow[]
@@ -152,13 +202,23 @@ export async function getStudentById(id: string) {
     (p) => isBillableFeeMonth(student.createdAt, p.month, p.year, now)
   )
 
-  if (!detailFeeEnabled && monthlyFees.length) {
+  if (!detailFeeEnabled) {
     const currentMonthlyFee = monthlyFees.find((p) => p.month === month && p.year === year)
-    const totalFee = student.subjects.reduce((sum, row) => sum + row.subject.fee, 0)
+    // Use grade subjects (same basis as syncStudentMonthlyFee / StudentMonthlyFee.expectedAmount)
+    const totalFee = student.grade.subjects.reduce((sum, sub) => sum + sub.fee, 0)
 
-    pendingBalance = monthlyFees
+    // Sum unpaid balances from existing rows (covers partial payments and historical dues)
+    const balanceFromRows = monthlyFees
       .filter((p) => p.status !== PaymentStatus.PAID)
       .reduce((sum, p) => sum + p.balance, 0)
+
+    // Find ALL eligible months with no row at all — these are fully unpaid
+    const existingMonthKeys = new Set(monthlyFees.map((p) => `${p.year}-${p.month}`))
+    const missingMonthsDue = getAllEligibleMonths(student.createdAt, now)
+      .filter((m) => !existingMonthKeys.has(`${m.year}-${m.month}`))
+      .reduce((sum) => sum + totalFee, 0)
+
+    pendingBalance = balanceFromRows + missingMonthsDue
 
     feeStatus = student.subjects.map(({ subject }) => {
       const ratio = totalFee > 0 ? subject.fee / totalFee : 0
@@ -183,9 +243,20 @@ export async function getStudentById(id: string) {
     }))
   } else {
     const monthlyPayments = payments.filter((p) => p.month === month && p.year === year)
-    pendingBalance = payments
+    const totalFee = student.subjects.reduce((sum, row) => sum + row.subject.fee, 0)
+
+    // Sum unpaid balances from existing rows (covers partial payments and historical dues)
+    const balanceFromRows = payments
       .filter((p) => p.status !== PaymentStatus.PAID)
       .reduce((sum, p) => sum + p.balance, 0)
+
+    // Find ALL eligible months with no payment row at all — these are fully unpaid
+    const existingMonthKeys = new Set(payments.map((p) => `${p.year}-${p.month}`))
+    const missingMonthsDue = getAllEligibleMonths(student.createdAt, now)
+      .filter((m) => !existingMonthKeys.has(`${m.year}-${m.month}`))
+      .reduce((sum) => sum + totalFee, 0)
+
+    pendingBalance = balanceFromRows + missingMonthsDue
 
     feeStatus = student.subjects.map(({ subject }) => {
       const payment = monthlyPayments.find((p) => p.subjectId === subject.id)
@@ -220,11 +291,31 @@ export async function getStudentById(id: string) {
       }))
   }
 
+  // Inject missing months (no row at all) as PENDING entries so the frontend
+  // can display them in the Pending Payments section.
+  const existingKeys = new Set(paymentHistory.map((p) => `${p.year}-${p.month}`))
+  const totalFeeForMissing = detailFeeEnabled
+    ? student.subjects.reduce((sum, row) => sum + row.subject.fee, 0)
+    : student.grade.subjects.reduce((sum, sub) => sum + sub.fee, 0)
+
+  for (const { month: m, year: y } of getAllEligibleMonths(student.createdAt, now)) {
+    if (!existingKeys.has(`${y}-${m}`)) {
+      paymentHistory.push({
+        month: m,
+        year: y,
+        amountPaid: 0,
+        balance: totalFeeForMissing,
+        status: 'PENDING',
+        paidAt: null,
+      })
+    }
+  }
+
   paymentHistory.sort((a, b) => b.year !== a.year ? b.year - a.year : b.month - a.month)
 
   return {
     ...student,
-    attendanceSummary: Object.values(attendanceSummary),
+    attendanceSummary,
     feeStatus,
     pendingBalance,
     paymentHistory,

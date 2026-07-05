@@ -144,7 +144,6 @@ export async function getAttendanceForSession(
 export async function saveAttendance(records: AttendanceInput[], isTeacher = true) {
   if (records.length === 0) return []
 
-  const results = []
   const first = records[0]
 
   const dayStart = new Date(first.date)
@@ -179,51 +178,54 @@ export async function saveAttendance(records: AttendanceInput[], isTeacher = tru
     }
   }
 
-  for (const record of records) {
-    // Upsert per student+subject+sessionNumber within the same calendar day
-    const existing = await prisma.attendance.findFirst({
-      where: {
-        studentId: record.studentId,
-        subjectId: record.subjectId,
-        sessionNumber: record.sessionNumber,
-        date: { gte: dayStart, lte: dayEnd },
-      },
-    })
+  // #2 — batch: one findMany to fetch all existing records for this session/day,
+  // then split into updates vs creates and run them in a transaction.
+  const studentIds = records.map((r) => r.studentId)
 
-    if (existing) {
-      results.push(
-        await prisma.attendance.update({
-          where: { id: existing.id },
-          data: {
-            status: record.status,
-            teacherId: record.teacherId,
-            ...(record.remarks !== undefined && { remarks: record.remarks }),
-          },
-        })
-      )
-    } else {
-      results.push(
-        await prisma.attendance.create({
-          data: {
-            studentId: record.studentId,
-            subjectId: record.subjectId,
-            teacherId: record.teacherId,
-            date: record.date,
-            sessionNumber: record.sessionNumber,
-            status: record.status,
-            remarks: record.remarks ?? null,
-          },
-        })
-      )
-    }
-  }
+  const existingRecords = await prisma.attendance.findMany({
+    where: {
+      subjectId: first.subjectId,
+      sessionNumber: first.sessionNumber,
+      studentId: { in: studentIds },
+      date: { gte: dayStart, lte: dayEnd },
+    },
+    select: { id: true, studentId: true },
+  })
+  const existingMap = new Map(existingRecords.map((r) => [r.studentId, r.id]))
+
+  const toUpdate = records.filter((r) => existingMap.has(r.studentId))
+  const toCreate = records.filter((r) => !existingMap.has(r.studentId))
+
+  const results = await prisma.$transaction([
+    ...toUpdate.map((r) =>
+      prisma.attendance.update({
+        where: { id: existingMap.get(r.studentId)! },
+        data: {
+          status: r.status,
+          teacherId: r.teacherId,
+          ...(r.remarks !== undefined && { remarks: r.remarks }),
+        },
+      })
+    ),
+    ...toCreate.map((r) =>
+      prisma.attendance.create({
+        data: {
+          studentId: r.studentId,
+          subjectId: r.subjectId,
+          teacherId: r.teacherId,
+          date: r.date,
+          sessionNumber: r.sessionNumber,
+          status: r.status,
+          remarks: r.remarks ?? null,
+        },
+      })
+    ),
+  ])
 
   // TeacherSession tracking and salary — teachers only
-  // Admins updating attendance must not affect session counts or salary
   if (isTeacher) {
     const subject = await prisma.subject.findUnique({
       where: { id: first.subjectId },
-      include: { grade: true },
     })
 
     if (subject) {
@@ -266,25 +268,22 @@ async function upsertTeacherSalary(
   month: number,
   year: number
 ) {
-  const subject = await prisma.subject.findUnique({ where: { id: subjectId } })
-  const requiredSessions = subject?.monthlySessionTarget ?? 12
+  // Batch: fetch subject, assignment, institute, session count, and existing salary in parallel
+  const [subject, assignment, institute, completedSessions, existing] = await Promise.all([
+    prisma.subject.findUnique({ where: { id: subjectId }, select: { monthlySessionTarget: true } }),
+    prisma.teacherAssignment.findFirst({
+      where: { userId: teacherId, subjectId, gradeId },
+      select: { rate: true },
+    }),
+    prisma.institute.findFirst({ select: { defaultTeacherRate: true } }),
+    prisma.teacherSession.count({ where: { teacherId, subjectId, month, year } }),
+    prisma.teacherSalary.findFirst({ where: { teacherId, subjectId, gradeId, month, year } }),
+  ])
 
-  // Use the rate from the teacher's assignment for this subject+grade
-  const assignment = await prisma.teacherAssignment.findFirst({
-    where: { userId: teacherId, subjectId, gradeId },
-  })
-  const institute = await prisma.institute.findFirst()
+  const requiredSessions = subject?.monthlySessionTarget ?? 12
   const rate = assignment?.rate && assignment.rate > 0
     ? assignment.rate
     : (institute?.defaultTeacherRate ?? 5000)
-
-  const completedSessions = await prisma.teacherSession.count({
-    where: { teacherId, subjectId, month, year },
-  })
-
-  const existing = await prisma.teacherSalary.findFirst({
-    where: { teacherId, subjectId, gradeId, month, year },
-  })
 
   const data = {
     completedSessions,

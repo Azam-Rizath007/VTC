@@ -219,6 +219,31 @@ export default function StudentDetailPage() {
         </dl>
       </Card>
 
+      {(() => {
+        const pendingMonths = student.paymentHistory.filter(
+          (p) => p.status === 'PENDING' || p.status === 'PARTIAL'
+        )
+        if (pendingMonths.length === 0) return null
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Pending Payments</CardTitle>
+            </CardHeader>
+            <div className="space-y-3">
+              {pendingMonths.map((payment) => (
+                <div key={`pending-${payment.year}-${payment.month}`} className="flex items-center justify-between text-sm">
+                  <p className="font-medium">{MONTHS[payment.month - 1]} {payment.year}</p>
+                  <div className="text-right">
+                    <p className="font-semibold text-red-500">{formatCurrency(payment.balance)}</p>
+                    {statusBadge(payment.status)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )
+      })()}
+
       <Card>
         <CardHeader>
           <CardTitle>Enrolled Subjects</CardTitle>
@@ -261,21 +286,24 @@ export default function StudentDetailPage() {
         <CardHeader>
           <CardTitle>Payment History</CardTitle>
         </CardHeader>
-        {student.paymentHistory.length === 0 ? (
-          <p className="text-sm text-gray-400">No payments recorded yet.</p>
-        ) : (
-          <div className="space-y-3">
-            {student.paymentHistory.map((payment) => (
-              <div key={`${payment.year}-${payment.month}`} className="flex items-center justify-between text-sm">
-                <p className="font-medium">{MONTHS[payment.month - 1]} {payment.year}</p>
-                <div className="text-right">
-                  <p className="font-semibold text-green-600">{formatCurrency(payment.amountPaid)}</p>
-                  {statusBadge(payment.status)}
+        {(() => {
+          const paidMonths = student.paymentHistory.filter((p) => p.amountPaid > 0)
+          return paidMonths.length === 0 ? (
+            <p className="text-sm text-gray-400">No payments recorded yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {paidMonths.map((payment) => (
+                <div key={`${payment.year}-${payment.month}`} className="flex items-center justify-between text-sm">
+                  <p className="font-medium">{MONTHS[payment.month - 1]} {payment.year}</p>
+                  <div className="text-right">
+                    <p className="font-semibold text-green-600">{formatCurrency(payment.amountPaid)}</p>
+                    {statusBadge(payment.status)}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )
+        })()}
       </Card>
 
       <StudentForm
